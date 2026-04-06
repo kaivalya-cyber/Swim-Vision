@@ -1,0 +1,11 @@
+# This file lists the Python dependencies required to run the SwimVision pipeline.
+numpy
+scipy
+scikit-learn
+pandas
+matplotlib
+opencv-python
+mediapipe
+torch
+wandb
+reportlab

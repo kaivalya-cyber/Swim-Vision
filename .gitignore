@@ -1,0 +1,8 @@
+.DS_Store
+__pycache__/
+*.pyc
+
+.mp312/
+.vendor/
+
+models/pose_iter_440000.caffemodel

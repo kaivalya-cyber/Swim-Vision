@@ -1,0 +1,127 @@
+{
+  "clip_id": "dressel_runner",
+  "swimmer_id": "unknown",
+  "date": "2026-04-06",
+  "overall_severity": "CRITICAL",
+  "reaction_time_ms": null,
+  "annotated_video_path": "/Users/kaivalyasingh/Downloads/SwimVision/results/dressel_runner_annotated.mp4",
+  "phase_timestamps": {
+    "block_start": 0,
+    "block_end": 262,
+    "flight_start": 263,
+    "flight_end": 267,
+    "entry_start": 268,
+    "entry_end": 275,
+    "fps": 30
+  },
+  "angles": {
+    "csv_path": "/Users/kaivalyasingh/Downloads/SwimVision/results/dressel_runner_angles.csv"
+  },
+  "deviations": {
+    "block_phase": [
+      {
+        "metric": "front_knee_angle",
+        "measured": 110.19311479017308,
+        "optimal_min": 90.0,
+        "optimal_max": 110.0,
+        "deviation": 0.19311479017308386,
+        "flag": "MINOR",
+        "pro_mean": null,
+        "pro_std": null,
+        "pro_z_score": null
+      },
+      {
+        "metric": "rear_knee_angle",
+        "measured": 101.96838470284929,
+        "optimal_min": 110.0,
+        "optimal_max": 130.0,
+        "deviation": 8.031615297150708,
+        "flag": "MINOR",
+        "pro_mean": null,
+        "pro_std": null,
+        "pro_z_score": null
+      },
+      {
+        "metric": "hip_angle",
+        "measured": 36.87815223809884,
+        "optimal_min": 55.0,
+        "optimal_max": 75.0,
+        "deviation": 18.121847761901158,
+        "flag": "SIGNIFICANT",
+        "pro_mean": null,
+        "pro_std": null,
+        "pro_z_score": null
+      },
+      {
+        "metric": "torso_lean",
+        "measured": 51.67864880109169,
+        "optimal_min": 15.0,
+        "optimal_max": 30.0,
+        "deviation": 21.67864880109169,
+        "flag": "CRITICAL",
+        "pro_mean": null,
+        "pro_std": null,
+        "pro_z_score": null
+      }
+    ],
+    "flight_phase": [
+      {
+        "metric": "body_linearity",
+        "measured": 12.300998961393987,
+        "optimal_min": 0.0,
+        "optimal_max": 8.0,
+        "deviation": 4.3009989613939865,
+        "flag": "MINOR",
+        "pro_mean": null,
+        "pro_std": null,
+        "pro_z_score": null
+      },
+      {
+        "metric": "entry_angle",
+        "measured": 38.7457620371202,
+        "optimal_min": 30.0,
+        "optimal_max": 45.0,
+        "deviation": 0.0,
+        "flag": "OPTIMAL",
+        "pro_mean": null,
+        "pro_std": null,
+        "pro_z_score": null
+      },
+      {
+        "metric": "elbow_extension",
+        "measured": 164.1377166748047,
+        "optimal_min": 165.0,
+        "optimal_max": 180.0,
+        "deviation": 0.8622833251953068,
+        "flag": "MINOR",
+        "pro_mean": null,
+        "pro_std": null,
+        "pro_z_score": null
+      }
+    ],
+    "entry_phase": [
+      {
+        "metric": "streamline_angle",
+        "measured": 14.568043660861225,
+        "optimal_min": 0.0,
+        "optimal_max": 10.0,
+        "deviation": 4.568043660861225,
+        "flag": "MINOR",
+        "pro_mean": null,
+        "pro_std": null,
+        "pro_z_score": null
+      },
+      {
+        "metric": "elbow_lock_angle",
+        "measured": 171.92153358459473,
+        "optimal_min": 170.0,
+        "optimal_max": 180.0,
+        "deviation": 0.0,
+        "flag": "OPTIMAL",
+        "pro_mean": null,
+        "pro_std": null,
+        "pro_z_score": null
+      }
+    ]
+  }
+}
