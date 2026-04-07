@@ -1,4 +1,3 @@
-# This file documents SwimVision as a research-style project overview and working operator guide.
 # SwimVision: Competitive Swim Start Biomechanical Analyzer
 
 Last validated: April 2026 on macOS (Apple Silicon M4), `mediapipe==0.10.30`, Python 3.12.
