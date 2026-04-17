@@ -8,6 +8,10 @@ web_uploads/
 frontend/node_modules/
 frontend/dist/
 public/
+.vercel_python_packages/
+api/.python-version
+api/pyproject.toml
+api/uv.lock
 
 models/pose_iter_440000.caffemodel
 .vercel

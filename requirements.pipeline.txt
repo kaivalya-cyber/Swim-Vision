@@ -1,0 +1,11 @@
+# This file lists heavy dependencies required for full SwimVision video processing.
+numpy
+scipy
+scikit-learn
+pandas
+matplotlib
+opencv-python
+mediapipe
+torch
+wandb
+reportlab

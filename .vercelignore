@@ -1,0 +1,12 @@
+.git/
+.mp312/
+.vendor/
+frontend/node_modules/
+frontend/dist/
+public/
+web_uploads/
+data/
+models/
+results/
+notebooks/
+*.mov

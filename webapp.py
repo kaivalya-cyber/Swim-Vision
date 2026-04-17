@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -23,6 +24,7 @@ PUBLIC_DIR = PROJECT_ROOT / "public"
 UPLOADS_DIR = PROJECT_ROOT / "web_uploads"
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi", ".mpg", ".mpeg", ".webm"}
 MAX_RECENT_JOBS = 8
+IS_VERCEL = bool(os.environ.get("VERCEL"))
 
 
 @dataclass
@@ -188,6 +190,17 @@ def index() -> Any:
 
 @app.post("/api/jobs")
 def create_job() -> Any:
+    if IS_VERCEL:
+        return (
+            jsonify(
+                {
+                    "error": "Video pipeline jobs are disabled in this Vercel deployment.",
+                    "hint": "Use this UI for report browsing and run heavy SwimVision processing on a dedicated backend/local machine.",
+                }
+            ),
+            501,
+        )
+
     uploaded_file = request.files.get("video")
     if uploaded_file is None or not uploaded_file.filename:
         return jsonify({"error": "Choose a race or training video to upload."}), 400

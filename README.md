@@ -89,7 +89,7 @@ This command runs extraction, phase detection, joint angles, deviation scoring, 
 The repository now includes a dedicated React frontend with a premium landing page and analysis studio, while Flask remains the backend for uploads, background jobs, and artifact downloads.
 
 #### Build and run
-Install both Python and frontend dependencies:
+Install web dependencies for the Flask + React app:
 
 ```bash
 pip install -r requirements.txt
@@ -108,6 +108,14 @@ Open the local URL printed by Flask. The site will:
 - show live per-step progress and a polished results view
 - expose the annotated MP4, JSON, CSV, and PDF artifacts directly in the browser
 
+For full SwimVision processing (MediaPipe, OpenCV, Torch, etc.), install the heavy pipeline dependencies too:
+
+```bash
+pip install -r requirements.pipeline.txt
+```
+
+On Vercel, `api/` serverless routes run in a lightweight mode and reject new long-running pipeline jobs by design.
+
 #### Frontend development
 For UI iteration, run the frontend dev server separately:
 
@@ -117,7 +125,7 @@ npm install
 npm run dev
 ```
 
-The frontend source lives in `frontend/src/`. The production build is served by [webapp.py](/Users/kaivalyasingh/Downloads/SwimVision/webapp.py), which also powers the upload and job-status API.
+The frontend source lives in `frontend/src/`. Local/full backend behavior is served by [webapp.py](/Users/kaivalyasingh/Downloads/SwimVision/webapp.py), while Vercel uses lightweight `api/` functions for deployment-safe API responses.
 
 ### Step-by-step quickstart
 If you want to run the steps manually, use these commands in order.
