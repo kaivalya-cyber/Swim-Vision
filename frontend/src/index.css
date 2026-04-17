@@ -1,0 +1,52 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply min-h-screen bg-background font-sans text-foreground antialiased;
+    background:
+      radial-gradient(circle at 20% 0%, rgba(255,255,255,0.08), transparent 24%),
+      radial-gradient(circle at 80% 0%, rgba(255,255,255,0.05), transparent 20%),
+      linear-gradient(180deg, #050505 0%, #030303 100%);
+  }
+
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.22;
+    background-image:
+      linear-gradient(rgba(255,255,255,0.035) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.035) 1px, transparent 1px);
+    background-size: 140px 140px;
+    mask-image: linear-gradient(180deg, rgba(0,0,0,0.7), transparent 88%);
+  }
+}
+
+@layer utilities {
+  .hero-veil {
+    position: absolute;
+    inset: auto;
+    border-radius: 999px;
+    filter: blur(24px);
+    opacity: 0.85;
+    background:
+      radial-gradient(circle at center, rgba(255,255,255,0.92) 0%, rgba(255,255,255,0.38) 28%, rgba(255,255,255,0.08) 55%, transparent 72%);
+  }
+
+  .glass-line {
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.06),
+      0 0 0 1px rgba(255,255,255,0.05);
+  }
+}

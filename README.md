@@ -85,6 +85,40 @@ python src/run_pipeline.py --input data/raw/YOUR_VIDEO.mov --clip_id YOUR_ID --c
 
 This command runs extraction, phase detection, joint angles, deviation scoring, overlay rendering, and report generation in sequence, stopping on the first failure.
 
+### Browser interface
+The repository now includes a dedicated React frontend with a premium landing page and analysis studio, while Flask remains the backend for uploads, background jobs, and artifact downloads.
+
+#### Build and run
+Install both Python and frontend dependencies:
+
+```bash
+pip install -r requirements.txt
+cd frontend
+npm install
+npm run build
+cd ..
+python webapp.py
+```
+
+Open the local URL printed by Flask. The site will:
+
+- render the homepage from the Vite build in `frontend/dist/`
+- upload clips through the Flask `/api/jobs` endpoint
+- run the existing `src/run_pipeline.py` workflow in a background thread
+- show live per-step progress and a polished results view
+- expose the annotated MP4, JSON, CSV, and PDF artifacts directly in the browser
+
+#### Frontend development
+For UI iteration, run the frontend dev server separately:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+The frontend source lives in `frontend/src/`. The production build is served by [webapp.py](/Users/kaivalyasingh/Downloads/SwimVision/webapp.py), which also powers the upload and job-status API.
+
 ### Step-by-step quickstart
 If you want to run the steps manually, use these commands in order.
 

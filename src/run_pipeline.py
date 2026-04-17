@@ -9,11 +9,13 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+from typing import Callable
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
 RESULTS_DIR = PROJECT_ROOT / "results"
+ProgressCallback = Callable[[dict[str, object]], None]
 
 
 def _display_command(command: list[str]) -> str:
@@ -22,10 +24,33 @@ def _display_command(command: list[str]) -> str:
     return " ".join(command)
 
 
-def _run_step(index: int, total: int, label: str, command: list[str]) -> None:
+def _emit_progress(progress_callback: ProgressCallback | None, payload: dict[str, object]) -> None:
+    """Send a progress event to an optional callback."""
+
+    if progress_callback is not None:
+        progress_callback(payload)
+
+
+def _run_step(
+    index: int,
+    total: int,
+    label: str,
+    command: list[str],
+    progress_callback: ProgressCallback | None = None,
+) -> None:
     """Run a pipeline step and stop immediately on failure."""
 
     print(f"[{index}/{total}] {label}...")
+    _emit_progress(
+        progress_callback,
+        {
+            "event": "step_started",
+            "step_index": index,
+            "total_steps": total,
+            "label": label,
+            "command": _display_command(command),
+        },
+    )
     start_time = time.monotonic()
     result = subprocess.run(command, cwd=PROJECT_ROOT)
     elapsed = time.monotonic() - start_time
@@ -33,8 +58,31 @@ def _run_step(index: int, total: int, label: str, command: list[str]) -> None:
         print(f"[{index}/{total}] FAILED: {label} ({elapsed:.1f}s)")
         print(f"Command: {_display_command(command)}")
         print(f"Error: step '{label}' exited with code {result.returncode}.")
-        raise SystemExit(result.returncode)
+        _emit_progress(
+            progress_callback,
+            {
+                "event": "step_failed",
+                "step_index": index,
+                "total_steps": total,
+                "label": label,
+                "elapsed_seconds": elapsed,
+                "command": _display_command(command),
+                "return_code": result.returncode,
+            },
+        )
+        raise subprocess.CalledProcessError(result.returncode, command)
     print(f"[{index}/{total}] Done ({elapsed:.1f}s)")
+    _emit_progress(
+        progress_callback,
+        {
+            "event": "step_completed",
+            "step_index": index,
+            "total_steps": total,
+            "label": label,
+            "elapsed_seconds": elapsed,
+            "command": _display_command(command),
+        },
+    )
 
 
 def _resolve_dimensions(input_path: Path, crop: list[int] | None) -> tuple[int, int]:
@@ -91,22 +139,22 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> int:
-    """Run the full SwimVision pipeline for a single clip."""
+def run_pipeline(
+    input_path: str | Path,
+    clip_id: str,
+    crop: list[int] | None = None,
+    progress_callback: ProgressCallback | None = None,
+) -> dict[str, Path]:
+    """Run the full SwimVision pipeline and return the generated artifact paths."""
 
-    parser = build_arg_parser()
-    args = parser.parse_args()
-
-    input_path = (PROJECT_ROOT / args.input).resolve() if not os.path.isabs(args.input) else Path(args.input)
-    if not input_path.exists():
-        print(f"Input video not found: {input_path}")
-        return 1
+    resolved_input = Path(input_path).expanduser().resolve()
+    if not resolved_input.exists():
+        raise FileNotFoundError(f"Input video not found: {resolved_input}")
 
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    clip_id = args.clip_id
-    crop = [str(value) for value in args.crop] if args.crop is not None else []
+    crop_values = [str(value) for value in crop] if crop is not None else []
 
     keypoints_path = PROCESSED_DIR / f"{clip_id}_keypoints.npy"
     confidence_path = PROCESSED_DIR / f"{clip_id}_confidence.npy"
@@ -117,23 +165,33 @@ def main() -> int:
     report_json_path = RESULTS_DIR / f"{clip_id}_report.json"
     report_pdf_path = RESULTS_DIR / f"{clip_id}_report.pdf"
 
-    width, height = _resolve_dimensions(input_path, args.crop)
-
+    width, height = _resolve_dimensions(resolved_input, crop)
     total_steps = 6
+
+    _emit_progress(
+        progress_callback,
+        {
+            "event": "pipeline_started",
+            "clip_id": clip_id,
+            "input_path": str(resolved_input),
+            "total_steps": total_steps,
+            "crop": crop or [],
+        },
+    )
 
     extract_command = [
         sys.executable,
         "src/extract.py",
         "--input",
-        str(input_path),
+        str(resolved_input),
         "--output",
         str(PROCESSED_DIR),
         "--clip_id",
         clip_id,
     ]
-    if crop:
-        extract_command.extend(["--crop", *crop])
-    _run_step(1, total_steps, "Extracting keypoints", extract_command)
+    if crop_values:
+        extract_command.extend(["--crop", *crop_values])
+    _run_step(1, total_steps, "Extracting keypoints", extract_command, progress_callback=progress_callback)
 
     ingest_command = [
         sys.executable,
@@ -146,7 +204,7 @@ def main() -> int:
         "--output",
         str(boundaries_path),
     ]
-    _run_step(2, total_steps, "Detecting phase boundaries", ingest_command)
+    _run_step(2, total_steps, "Detecting phase boundaries", ingest_command, progress_callback=progress_callback)
 
     joint_command = [
         sys.executable,
@@ -162,7 +220,7 @@ def main() -> int:
         "--height",
         str(height),
     ]
-    _run_step(3, total_steps, "Computing joint angles", joint_command)
+    _run_step(3, total_steps, "Computing joint angles", joint_command, progress_callback=progress_callback)
 
     deviation_command = [
         sys.executable,
@@ -183,13 +241,13 @@ def main() -> int:
         str(boundaries_path),
         str(deviations_path),
     ]
-    _run_step(4, total_steps, "Computing deviations", deviation_command)
+    _run_step(4, total_steps, "Computing deviations", deviation_command, progress_callback=progress_callback)
 
     overlay_command = [
         sys.executable,
         "src/overlay.py",
         "--input",
-        str(input_path),
+        str(resolved_input),
         "--keypoints",
         str(keypoints_path),
         "--angles",
@@ -197,9 +255,9 @@ def main() -> int:
         "--output",
         str(annotated_path),
     ]
-    if crop:
-        overlay_command.extend(["--crop", *crop])
-    _run_step(5, total_steps, "Rendering annotated overlay", overlay_command)
+    if crop_values:
+        overlay_command.extend(["--crop", *crop_values])
+    _run_step(5, total_steps, "Rendering annotated overlay", overlay_command, progress_callback=progress_callback)
 
     report_command = [
         sys.executable,
@@ -215,21 +273,48 @@ def main() -> int:
         "--output",
         str(RESULTS_DIR),
     ]
-    _run_step(6, total_steps, "Generating report", report_command)
+    _run_step(6, total_steps, "Generating report", report_command, progress_callback=progress_callback)
 
-    outputs = [
-        keypoints_path,
-        confidence_path,
-        angles_path,
-        boundaries_path,
-        deviations_path,
-        annotated_path,
-        report_json_path,
-        report_pdf_path,
-    ]
+    outputs = {
+        "keypoints": keypoints_path,
+        "confidence": confidence_path,
+        "angles_csv": angles_path,
+        "boundaries_json": boundaries_path,
+        "deviations_json": deviations_path,
+        "annotated_video": annotated_path,
+        "report_json": report_json_path,
+        "report_pdf": report_pdf_path,
+    }
+
+    _emit_progress(
+        progress_callback,
+        {
+            "event": "pipeline_completed",
+            "clip_id": clip_id,
+            "total_steps": total_steps,
+            "outputs": {name: str(path) for name, path in outputs.items()},
+        },
+    )
+    return outputs
+
+
+def main() -> int:
+    """Run the full SwimVision pipeline for a single clip."""
+
+    parser = build_arg_parser()
+    args = parser.parse_args()
+
+    input_path = (PROJECT_ROOT / args.input).resolve() if not os.path.isabs(args.input) else Path(args.input)
+    try:
+        outputs = run_pipeline(input_path=input_path, clip_id=args.clip_id, crop=args.crop)
+    except FileNotFoundError as exc:
+        print(str(exc))
+        return 1
+    except subprocess.CalledProcessError as exc:
+        return int(exc.returncode)
 
     print("\nPipeline complete. Output files found:")
-    for output_path in outputs:
+    for output_path in outputs.values():
         exists = output_path.exists() and output_path.stat().st_size > 0
         status = "OK" if exists else "MISSING"
         print(f"- [{status}] {output_path.relative_to(PROJECT_ROOT)}")

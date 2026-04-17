@@ -9,3 +9,4 @@ mediapipe
 torch
 wandb
 reportlab
+flask

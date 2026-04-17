@@ -4,5 +4,10 @@ __pycache__/
 
 .mp312/
 .vendor/
+web_uploads/
+frontend/node_modules/
+frontend/dist/
+public/
 
 models/pose_iter_440000.caffemodel
+.vercel
