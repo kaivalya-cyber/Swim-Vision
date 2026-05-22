@@ -6,8 +6,10 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+from pathlib import Path
 from typing import Any, Dict
 
+import librosa
 import numpy as np
 
 
@@ -16,6 +18,45 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
 )
 LOGGER = logging.getLogger(__name__)
+
+
+def detect_beep_frame(video_path: str, fps: float) -> int | None:
+    """Automatically detect the start beep frame from video audio.
+
+    Args:
+        video_path: Path to the video file.
+        fps: Frame rate of the video.
+
+    Returns:
+        Frame index of the beep, or None.
+    """
+
+    try:
+        y, sr = librosa.load(video_path, sr=None)
+    except Exception as exc:
+        LOGGER.warning("Failed to load audio for beep detection: %s", exc)
+        return None
+
+    # Competitive start beep is usually around 1kHz - 2kHz
+    # We look for a sharp increase in energy in that band
+    S = np.abs(librosa.stft(y))
+    freqs = librosa.fft_frequencies(sr=sr)
+    band = (freqs >= 800) & (freqs <= 2500)
+    band_energy = np.mean(S[band, :], axis=0)
+
+    # Detect onset in the specific band
+    onset_env = librosa.onset.onset_strength(y=y, sr=sr, aggregate=np.median)
+    # Combine band energy with onset strength
+    combined_score = onset_env * band_energy[:len(onset_env)]
+
+    # Find peak
+    peak_idx = np.argmax(combined_score)
+    times = librosa.times_like(onset_env, sr=sr)
+    beep_time = times[peak_idx]
+
+    beep_frame = int(beep_time * fps)
+    LOGGER.info("Detected beep at time %.2f (frame %d)", beep_time, beep_frame)
+    return beep_frame
 
 
 def detect_reaction_time(keypoints: np.ndarray, audio_beep_frame: int, fps: float) -> float | None:
@@ -113,7 +154,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(description="Estimate swim-start reaction time.")
     parser.add_argument("--keypoints", required=True, help="Path to a keypoints .npy file.")
-    parser.add_argument("--audio_beep_frame", required=True, type=int, help="Beep frame index.")
+    parser.add_argument("--audio_beep_frame", type=int, help="Beep frame index (manual override).")
+    parser.add_argument("--video", help="Path to video file for auto beep detection.")
     parser.add_argument("--fps", required=True, type=float, help="Video frame rate.")
     parser.add_argument("--entry_frame", type=int, help="Optional entry frame for first-stroke detection.")
     return parser
@@ -138,8 +180,16 @@ def main() -> int:
         LOGGER.error("Failed to load keypoints from %s: %s", args.keypoints, exc)
         return 1
 
+    beep_frame = args.audio_beep_frame
+    if beep_frame is None and args.video:
+        beep_frame = detect_beep_frame(args.video, args.fps)
+
+    if beep_frame is None:
+        LOGGER.error("Beep frame could not be detected and was not provided.")
+        return 1
+
     try:
-        reaction_time = detect_reaction_time(keypoints, args.audio_beep_frame, args.fps)
+        reaction_time = detect_reaction_time(keypoints, beep_frame, args.fps)
     except Exception as exc:
         LOGGER.error("Reaction-time detection failed: %s", exc)
         return 1

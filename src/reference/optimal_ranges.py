@@ -33,6 +33,7 @@ OPTIMAL_RANGES: Dict[str, Dict[str, Tuple[float, float]]] = {
         "streamline_angle": (0.0, 10.0),
         "elbow_lock_angle": (170.0, 180.0),
         "velocity": (1.5, 3.0),
+        "splash_score": (0.0, 15.0),
     },
 }
 

@@ -507,6 +507,68 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def auto_detect_crop(video_path: Path) -> tuple[int, int, int, int] | None:
+    """Heuristically detect the target swimmer and return an optimal crop.
+
+    Args:
+        video_path: Path to the raw video.
+
+    Returns:
+        Crop tuple (x, y, w, h) or None.
+    """
+
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        return None
+
+    # Sample a frame from the beginning where the swimmer is on the block
+    # We skip first few frames for stability
+    for _ in range(5): capture.read()
+    success, frame = capture.read()
+    capture.release()
+
+    if not success or frame is None:
+        return None
+
+    height, width = frame.shape[:2]
+
+    # Heuristic: Swimmers are usually in the center or slightly offset
+    # We run MediaPipe Pose on the full frame to find the main person
+    try:
+        pose, _ = _initialize_pose_with_fallback()
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        result = pose.process(rgb_frame)
+        pose.close()
+
+        if result.pose_landmarks:
+            # Find the bounding box of the detected landmarks
+            lms = result.pose_landmarks.landmark
+            xs = [lm.x for lm in lms]
+            ys = [lm.y for lm in lms]
+
+            x_min, x_max = min(xs), max(xs)
+            y_min, y_max = min(ys), max(ys)
+
+            # Add padding
+            w = (x_max - x_min) * 1.5
+            h = (y_max - y_min) * 1.5
+            center_x = (x_min + x_max) / 2
+            center_y = (y_min + y_max) / 2
+
+            crop_x = int(max(0, (center_x - w/2) * width))
+            crop_y = int(max(0, (center_y - h/2) * height))
+            crop_w = int(min(width - crop_x, w * width))
+            crop_h = int(min(height - crop_y, h * height))
+
+            LOGGER.info("Auto-detected crop: %s", (crop_x, crop_y, crop_w, crop_h))
+            return crop_x, crop_y, crop_w, crop_h
+
+    except Exception as exc:
+        LOGGER.warning("Auto-crop detection failed: %s", exc)
+
+    return None
+
+
 def main() -> int:
     """Run the keypoint extraction command-line interface.
 

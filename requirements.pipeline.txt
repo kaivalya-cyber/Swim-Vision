@@ -9,3 +9,5 @@ mediapipe
 torch
 wandb
 reportlab
+librosa
+scipy

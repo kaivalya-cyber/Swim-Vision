@@ -371,6 +371,24 @@ def render_overlay(
                             f"Failed to draw labels for joint {joint_index} on frame {frame_index}: {exc}"
                         ) from exc
 
+            # Draw CoM Trajectory Arc
+            # Use a window of previous frames to draw the trail
+            trail_window = 30
+            for i in range(max(0, frame_index - trail_window), frame_index):
+                if "com_x" in angles_df.columns and "com_y" in angles_df.columns:
+                    p1 = _pixel_coord(angles_df.iloc[i][["com_x", "com_y"]].values, width, height)
+                    p2 = _pixel_coord(angles_df.iloc[i+1][["com_x", "com_y"]].values, width, height)
+                    # Fade color based on age
+                    alpha = (i - (frame_index - trail_window)) / trail_window
+                    color = (int(255 * alpha), int(100 * alpha), 0)
+                    cv2.line(frame, p1, p2, color, 2)
+
+            # Draw current CoM point
+            if "com_x" in angles_df.columns and "com_y" in angles_df.columns:
+                com_point = _pixel_coord(angles_df.iloc[frame_index][["com_x", "com_y"]].values, width, height)
+                cv2.drawMarker(frame, com_point, (255, 165, 0), cv2.MARKER_CROSS, 15, 2)
+                cv2.putText(frame, "CoM", (com_point[0] + 10, com_point[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 165, 0), 1)
+
             try:
                 cv2.putText(
                     frame,

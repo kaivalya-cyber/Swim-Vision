@@ -38,6 +38,7 @@ FLAG_EXPLANATIONS = {
     "streamline_angle": "Streamline alignment may increase frontal resistance after entry.",
     "elbow_lock_angle": "Elbow position may soften the streamline during underwater travel.",
     "velocity": "Low velocity indicates a loss of momentum during this phase.",
+    "splash_score": "A high splash score suggests an inefficient water entry that creates excess drag.",
 }
 DRILL_SUGGESTIONS = {
     "front_knee_angle": "Practice 'Weight Shift' drills: ensure your center of gravity is forward so your front knee is loaded and ready to explode.",
@@ -50,6 +51,7 @@ DRILL_SUGGESTIONS = {
     "streamline_angle": "Focus on 'Finger-First Entry': ensure hands lead the body into the water at a sharp angle to create a 'hole' for the rest of the body.",
     "elbow_lock_angle": "Try 'Push-and-Glide' drills: maintain a rock-solid streamline for at least 5 meters after every push-off.",
     "velocity": "Focus on explosive power drills like 'Box Jumps' or 'Resistance Starts' to increase takeoff and breakout speed.",
+    "splash_score": "Practice 'Clean Entry' drills: focus on entering through a single 'hole' in the water with minimal surface disturbance.",
 }
 
 

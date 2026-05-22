@@ -82,6 +82,61 @@ def _acute_angle(angle_degrees: float) -> float:
     return min(bounded, 180.0 - bounded)
 
 
+def compute_com(frame: np.ndarray, aspect_ratio: float) -> np.ndarray:
+    """Compute the Center of Mass (CoM) for a single frame using segmental weights.
+
+    Args:
+        frame: Keypoint array for a single frame [33, 2].
+        aspect_ratio: Width / Height for scaling.
+
+    Returns:
+        CoM in [x, y] format.
+    """
+
+    # Segment weights and CoM positions (proximal to distal ratio)
+    # Ref: Winter, D. A. (2009). Biomechanics and Motor Control of Human Movement.
+    segments = [
+        # Torso: Shoulders & Hips. Weight 0.433
+        {"joints": [11, 12, 23, 24], "weight": 0.433, "ratio": 0.5},
+        # Head: Nose. Weight 0.081
+        {"joints": [0], "weight": 0.081, "ratio": 1.0},
+        # Upper Arms. Weight 0.028 each
+        {"joints": [11, 13], "weight": 0.028, "ratio": 0.436},
+        {"joints": [12, 14], "weight": 0.028, "ratio": 0.436},
+        # Forearms. Weight 0.016 each
+        {"joints": [13, 15], "weight": 0.016, "ratio": 0.430},
+        {"joints": [14, 16], "weight": 0.016, "ratio": 0.430},
+        # Thighs. Weight 0.100 each
+        {"joints": [23, 25], "weight": 0.100, "ratio": 0.433},
+        {"joints": [24, 26], "weight": 0.100, "ratio": 0.433},
+        # Shanks. Weight 0.0465 each
+        {"joints": [25, 27], "weight": 0.0465, "ratio": 0.433},
+        {"joints": [26, 28], "weight": 0.0465, "ratio": 0.433},
+        # Feet. Weight 0.0145 each
+        {"joints": [27, 31], "weight": 0.0145, "ratio": 0.5},
+        {"joints": [28, 32], "weight": 0.0145, "ratio": 0.5},
+    ]
+
+    total_weight = 0.0
+    com_accum = np.zeros(2, dtype=np.float32)
+
+    for seg in segments:
+        joints = [_scale_point(frame[j], aspect_ratio) for j in seg["joints"]]
+        # Compute segmental center
+        if len(joints) == 1:
+            seg_com = joints[0]
+        elif len(joints) == 2:
+            seg_com = joints[0] + seg["ratio"] * (joints[1] - joints[0])
+        else:
+            # For torso, take midpoint of the 4 points
+            seg_com = np.mean(joints, axis=0)
+
+        com_accum += seg_com * seg["weight"]
+        total_weight += seg["weight"]
+
+    return com_accum / total_weight if total_weight > 0 else np.zeros(2)
+
+
 def body_linearity(shoulder_mid: np.ndarray, hip_mid: np.ndarray, ankle_mid: np.ndarray) -> float:
     """Compute deviation from straight alignment using y-sorted body landmarks.
 
@@ -230,6 +285,8 @@ def compute_all_angles(keypoints: np.ndarray, width: int | None = None, height: 
             "torso_x": float(hip_midpoint[0]),
             "torso_y": float(hip_midpoint[1]),
             "torso_length": torso_length,
+            "com_x": float(compute_com(frame, aspect_ratio)[0]),
+            "com_y": float(compute_com(frame, aspect_ratio)[1]),
         }
         records.append(record)
 
@@ -270,6 +327,8 @@ def compute_all_angles(keypoints: np.ndarray, width: int | None = None, height: 
             "elbow_extension",
             "elbow_lock_angle",
             "velocity",
+            "com_x",
+            "com_y",
         ]
     ]
 

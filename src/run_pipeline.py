@@ -154,6 +154,13 @@ def run_pipeline(
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
+    if crop is None:
+        try:
+            from src.extract import auto_detect_crop
+            crop = auto_detect_crop(resolved_input)
+        except Exception as exc:
+            print(f"Auto-crop failed: {exc}")
+
     crop_values = [str(value) for value in crop] if crop is not None else []
 
     keypoints_path = PROCESSED_DIR / f"{clip_id}_keypoints.npy"
@@ -230,8 +237,11 @@ def run_pipeline(
         (
             "import json, sys, pandas as pd; "
             "from src.metrics.deviation import compute_deviations, aggregate_report; "
+            "from src.ingest import analyze_entry_splash; "
             "angles = pd.read_csv(sys.argv[1], index_col=0); "
             "boundaries = json.load(open(sys.argv[2], 'r', encoding='utf-8')); "
+            "splash = analyze_entry_splash(sys.argv[4], boundaries['entry_start'], boundaries['entry_end'], sys.argv[5].split() if sys.argv[5] else None); "
+            "angles['splash_score'] = splash; "
             "block = compute_deviations(angles, 'block_phase', boundaries); "
             "flight = compute_deviations(angles, 'flight_phase', boundaries); "
             "entry = compute_deviations(angles, 'entry_phase', boundaries); "
@@ -242,6 +252,8 @@ def run_pipeline(
         str(angles_path),
         str(boundaries_path),
         str(deviations_path),
+        str(resolved_input),
+        " ".join(crop_values),
     ]
     _run_step(4, total_steps, "Computing deviations", deviation_command, progress_callback=progress_callback)
 
@@ -261,6 +273,18 @@ def run_pipeline(
         overlay_command.extend(["--crop", *crop_values])
     _run_step(5, total_steps, "Rendering annotated overlay", overlay_command, progress_callback=progress_callback)
 
+    # Automatic reaction time calculation
+    reaction_time = None
+    try:
+        from src.metrics.reaction_time import detect_beep_frame, detect_reaction_time
+        import numpy as np
+        kp = np.load(keypoints_path)
+        beep = detect_beep_frame(str(resolved_input), 30.0)
+        if beep is not None:
+            reaction_time = detect_reaction_time(kp, beep, 30.0)
+    except Exception as exc:
+        print(f"Reaction time detection failed: {exc}")
+
     report_command = [
         sys.executable,
         "src/report.py",
@@ -275,6 +299,8 @@ def run_pipeline(
         "--output",
         str(RESULTS_DIR),
     ]
+    if reaction_time is not None:
+        report_command.extend(["--reaction_time", str(reaction_time)])
     _run_step(6, total_steps, "Generating report", report_command, progress_callback=progress_callback)
 
     outputs = {
