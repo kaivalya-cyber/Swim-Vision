@@ -219,6 +219,8 @@ def run_pipeline(
         str(width),
         "--height",
         str(height),
+        "--fps",
+        "30.0", # This should ideally be probed from the video
     ]
     _run_step(3, total_steps, "Computing joint angles", joint_command, progress_callback=progress_callback)
 

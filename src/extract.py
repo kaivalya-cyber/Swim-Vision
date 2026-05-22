@@ -363,6 +363,23 @@ def extract_keypoints(
                     height,
                 )
 
+                # Temporal consistency: if we have a previous detection, check for jumps
+                if keypoints_per_frame:
+                    prev_kp = keypoints_per_frame[-1]
+                    # Only check if previous frame had a detection
+                    if np.max(prev_kp[:, 3]) > 0.1:
+                        # Compute distance for well-tracked points
+                        mask = (confidence > 0.5) & (prev_kp[:, 3] > 0.5)
+                        if np.any(mask):
+                            dist = np.linalg.norm(keypoints[mask, :2] - prev_kp[mask, :2], axis=1).mean()
+                            if dist > 0.15: # Significant jump in normalized coordinates
+                                LOGGER.warning("Pose jump detected at frame %s (dist=%.3f). Likely background interference.", frame_index, dist)
+                                # If confidence is lower than previous, ignore this detection
+                                if np.mean(confidence) < np.mean(prev_kp[:, 3]) * 0.8:
+                                    LOGGER.info("Ignoring low-confidence jump.")
+                                    keypoints = np.zeros((33, 4), dtype=np.float32)
+                                    confidence = np.zeros((33,), dtype=np.float32)
+
             mean_confidence = float(np.mean(confidence))
             LOGGER.info("Frame %s mean confidence: %.3f", frame_index, mean_confidence)
             if mean_confidence < 0.5:

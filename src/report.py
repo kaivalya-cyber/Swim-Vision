@@ -37,6 +37,19 @@ FLAG_EXPLANATIONS = {
     "elbow_extension": "Arm extension at entry may be incomplete, reducing streamline quality.",
     "streamline_angle": "Streamline alignment may increase frontal resistance after entry.",
     "elbow_lock_angle": "Elbow position may soften the streamline during underwater travel.",
+    "velocity": "Low velocity indicates a loss of momentum during this phase.",
+}
+DRILL_SUGGESTIONS = {
+    "front_knee_angle": "Practice 'Weight Shift' drills: ensure your center of gravity is forward so your front knee is loaded and ready to explode.",
+    "rear_knee_angle": "Focus on 'Rear Leg Drive' drills: Use the back foot to kick the block away, ensuring it provides initial horizontal momentum.",
+    "hip_angle": "Try 'Block Squats': improve hip flexibility and strength to maintain a powerful, coiled position.",
+    "torso_lean": "Practice 'Head and Torso Alignment': keep your chest close to your knees but eyes looking slightly forward, not at your feet.",
+    "body_linearity": "Perform 'Pencil Dives' or 'Tight Streamline Jumps' from the block to focus on a straight line from fingers to toes.",
+    "entry_angle": "Use 'Target Entry' drills: place a hula hoop or marker on the water to practice a consistent 35-40 degree entry.",
+    "elbow_extension": "Practice 'Wall Streamline Holds': focus on locking elbows behind the head to minimize frontal drag.",
+    "streamline_angle": "Focus on 'Finger-First Entry': ensure hands lead the body into the water at a sharp angle to create a 'hole' for the rest of the body.",
+    "elbow_lock_angle": "Try 'Push-and-Glide' drills: maintain a rock-solid streamline for at least 5 meters after every push-off.",
+    "velocity": "Focus on explosive power drills like 'Box Jumps' or 'Resistance Starts' to increase takeoff and breakout speed.",
 }
 
 
@@ -97,6 +110,18 @@ def generate_report(
     pdf_path = output_path / f"{clip_id}_report.pdf"
 
     phase_rows = _flatten_phase_rows(deviations)
+    # Enrich deviations with drills
+    enriched_deviations = {}
+    for phase in ["block_phase", "flight_phase", "entry_phase"]:
+        phase_rows = deviations.get(phase, [])
+        enriched_rows = []
+        for row in phase_rows:
+            metric = row.get("metric")
+            enriched_row = dict(row)
+            enriched_row["drill"] = DRILL_SUGGESTIONS.get(metric, "Focus on general biomechanical alignment drills.")
+            enriched_rows.append(enriched_row)
+        enriched_deviations[phase] = enriched_rows
+
     report_payload: Dict[str, Any] = {
         "clip_id": clip_id,
         "swimmer_id": deviations.get("swimmer_id", "unknown"),
@@ -106,11 +131,7 @@ def generate_report(
         "annotated_video_path": annotated_video_path,
         "phase_timestamps": deviations.get("phase_boundaries", {}),
         "angles": deviations.get("angles", {}),
-        "deviations": {
-            "block_phase": deviations.get("block_phase", []),
-            "flight_phase": deviations.get("flight_phase", []),
-            "entry_phase": deviations.get("entry_phase", []),
-        },
+        "deviations": enriched_deviations,
     }
 
     try:
@@ -131,6 +152,15 @@ def generate_report(
         pdf.drawString(72, 695, f"Date: {report_payload['date']}")
         pdf.drawString(72, 675, f"Overall Severity: {report_payload['overall_severity']}")
         pdf.drawString(72, 655, f"Reaction Time (ms): {reaction_time if reaction_time is not None else 'N/A'}")
+
+        # Calculate mean confidence for the report
+        total_conf = []
+        for p in ["block_phase", "flight_phase", "entry_phase"]:
+            for r in deviations.get(p, []):
+                # This is a bit of a hack since deviations doesn't store confidence directly,
+                # but we can pass it in if we update the pipeline.
+                pass
+
         pdf.drawString(72, 635, f"Annotated Video: {annotated_video_path}")
         pdf.showPage()
 
@@ -178,20 +208,27 @@ def generate_report(
         if not flagged_rows:
             pdf.drawString(72, current_y, "No SIGNIFICANT or CRITICAL deviations were detected.")
         for row in flagged_rows:
+            metric = str(row.get("metric", ""))
             explanation = FLAG_EXPLANATIONS.get(
-                str(row.get("metric", "")),
+                metric,
                 "This metric deviated meaningfully from the expected biomechanical target.",
             )
-            line = (
-                f"{row.get('phase', '')} | {row.get('metric', '')} | "
-                f"{row.get('flag', '')}: {explanation}"
-            )
-            pdf.drawString(72, current_y, line[:100])
-            current_y -= 22
-            if current_y < 72:
+            drill = DRILL_SUGGESTIONS.get(metric, "Focus on general biomechanical alignment drills.")
+
+            pdf.setFont("Helvetica-Bold", 10)
+            line_header = f"{row.get('phase', '')} | {metric} | {row.get('flag', '')}"
+            pdf.drawString(72, current_y, line_header)
+            current_y -= 14
+
+            pdf.setFont("Helvetica", 9)
+            pdf.drawString(82, current_y, f"Issue: {explanation}")
+            current_y -= 12
+            pdf.drawString(82, current_y, f"Drill: {drill}")
+            current_y -= 20
+
+            if current_y < 80:
                 pdf.showPage()
                 _draw_page_header(pdf, "Key Flagged Issues (cont.)")
-                pdf.setFont("Helvetica", 11)
                 current_y = 715
 
         pdf.save()

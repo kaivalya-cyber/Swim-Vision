@@ -65,6 +65,30 @@ def compare_clips(clip_a: str, clip_b: str, results_dir: str) -> Path:
     comparison[f"{prefix_b}_measured"] = pd.to_numeric(comparison[f"{prefix_b}_measured"], errors="coerce")
     comparison["measured_delta"] = comparison[f"{prefix_a}_measured"] - comparison[f"{prefix_b}_measured"]
 
+    # Heuristic for progress:
+    # For most angles, we want to be closer to optimal.
+    # For velocity, higher is better.
+    def calculate_improvement(row: pd.Series) -> str:
+        metric = str(row["metric"])
+        delta = row["measured_delta"]
+        if pd.isna(delta): return "N/A"
+
+        if metric == "velocity":
+            return "IMPROVED" if delta > 0 else "REGRESSED"
+
+        # For angles, check if we got closer to optimal
+        # This is a simplification.
+        dev_a = abs(row[f"{prefix_a}_deviation"])
+        dev_b = abs(row[f"{prefix_b}_deviation"])
+        if dev_a < dev_b:
+            return "IMPROVED"
+        elif dev_a > dev_b:
+            return "REGRESSED"
+        else:
+            return "STABLE"
+
+    comparison["progress_status"] = comparison.apply(calculate_improvement, axis=1)
+
     output_path = results_path / f"{clip_a}_vs_{clip_b}_comparison.csv"
     comparison.to_csv(output_path, index=False)
     LOGGER.info("Saved comparison CSV to %s", output_path)
