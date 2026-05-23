@@ -154,6 +154,13 @@ def run_pipeline(
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
+    if crop is None:
+        try:
+            from src.extract import auto_detect_crop
+            crop = auto_detect_crop(resolved_input)
+        except Exception as exc:
+            print(f"Auto-crop failed: {exc}")
+
     crop_values = [str(value) for value in crop] if crop is not None else []
 
     keypoints_path = PROCESSED_DIR / f"{clip_id}_keypoints.npy"
@@ -166,6 +173,20 @@ def run_pipeline(
     report_pdf_path = RESULTS_DIR / f"{clip_id}_report.pdf"
 
     width, height = _resolve_dimensions(resolved_input, crop)
+
+    # Pre-calculate automation metrics needed for deviations
+    reaction_time = None
+    breakout_dist = None
+    try:
+        from src.metrics.reaction_time import detect_beep_frame, detect_reaction_time, detect_first_stroke_time, estimate_breakout_distance
+        import numpy as np
+
+        # We need keypoints for breakout distance, so we run extraction first?
+        # Actually, let's keep the pipeline order but move the deviation computation after we have the metrics.
+        # Or better: run the automation metrics as a separate step before Step 4.
+    except Exception as exc:
+        print(f"Automation import failed: {exc}")
+
     total_steps = 6
 
     _emit_progress(
@@ -219,29 +240,10 @@ def run_pipeline(
         str(width),
         "--height",
         str(height),
+        "--fps",
+        "30.0", # This should ideally be probed from the video
     ]
     _run_step(3, total_steps, "Computing joint angles", joint_command, progress_callback=progress_callback)
-
-    deviation_command = [
-        sys.executable,
-        "-c",
-        (
-            "import json, sys, pandas as pd; "
-            "from src.metrics.deviation import compute_deviations, aggregate_report; "
-            "angles = pd.read_csv(sys.argv[1], index_col=0); "
-            "boundaries = json.load(open(sys.argv[2], 'r', encoding='utf-8')); "
-            "block = compute_deviations(angles, 'block_phase', boundaries); "
-            "flight = compute_deviations(angles, 'flight_phase', boundaries); "
-            "entry = compute_deviations(angles, 'entry_phase', boundaries); "
-            "report = aggregate_report(block, flight, entry); "
-            "report['phase_boundaries'] = boundaries; "
-            "json.dump(report, open(sys.argv[3], 'w', encoding='utf-8'), indent=2)"
-        ),
-        str(angles_path),
-        str(boundaries_path),
-        str(deviations_path),
-    ]
-    _run_step(4, total_steps, "Computing deviations", deviation_command, progress_callback=progress_callback)
 
     overlay_command = [
         sys.executable,
@@ -257,7 +259,53 @@ def run_pipeline(
     ]
     if crop_values:
         overlay_command.extend(["--crop", *crop_values])
-    _run_step(5, total_steps, "Rendering annotated overlay", overlay_command, progress_callback=progress_callback)
+    _run_step(4, total_steps, "Rendering annotated overlay", overlay_command, progress_callback=progress_callback)
+
+    # Automatic reaction time and breakout distance calculation
+    reaction_time = None
+    breakout_dist = None
+    try:
+        from src.metrics.reaction_time import detect_beep_frame, detect_reaction_time, detect_first_stroke_time, estimate_breakout_distance
+        import numpy as np
+        kp = np.load(keypoints_path)
+        beep = detect_beep_frame(str(resolved_input), 30.0)
+        if beep is not None:
+            reaction_time = detect_reaction_time(kp, beep, 30.0)
+
+        boundaries = json.load(open(boundaries_path, "r"))
+        stroke_data = detect_first_stroke_time(kp, boundaries["entry_start"], 30.0)
+        if stroke_data["first_stroke_frame"]:
+            breakout_dist = estimate_breakout_distance(kp, boundaries["entry_start"], stroke_data["first_stroke_frame"])
+    except Exception as exc:
+        print(f"Reaction time/breakout detection failed: {exc}")
+
+    deviation_command = [
+        sys.executable,
+        "-c",
+        (
+            "import json, sys, pandas as pd; "
+            "from src.metrics.deviation import compute_deviations, aggregate_report; "
+            "from src.ingest import analyze_entry_splash; "
+            "angles = pd.read_csv(sys.argv[1], index_col=0); "
+            "boundaries = json.load(open(sys.argv[2], 'r', encoding='utf-8')); "
+            "splash = analyze_entry_splash(sys.argv[4], boundaries['entry_start'], boundaries['entry_end'], sys.argv[5].split() if sys.argv[5] else None); "
+            "angles['splash_score'] = splash; "
+            "block = compute_deviations(angles, 'block_phase', boundaries); "
+            "flight = compute_deviations(angles, 'flight_phase', boundaries); "
+            "entry = compute_deviations(angles, 'entry_phase', boundaries); "
+            "report = aggregate_report(block, flight, entry); "
+            "report['phase_boundaries'] = boundaries; "
+            "if sys.argv[6] != 'None': report['breakout_distance_m'] = float(sys.argv[6]); "
+            "json.dump(report, open(sys.argv[3], 'w', encoding='utf-8'), indent=2)"
+        ),
+        str(angles_path),
+        str(boundaries_path),
+        str(deviations_path),
+        str(resolved_input),
+        " ".join(crop_values),
+        str(breakout_dist),
+    ]
+    _run_step(5, total_steps, "Computing deviations", deviation_command, progress_callback=progress_callback)
 
     report_command = [
         sys.executable,
@@ -273,6 +321,8 @@ def run_pipeline(
         "--output",
         str(RESULTS_DIR),
     ]
+    if reaction_time is not None:
+        report_command.extend(["--reaction_time", str(reaction_time)])
     _run_step(6, total_steps, "Generating report", report_command, progress_callback=progress_callback)
 
     outputs = {

@@ -8,7 +8,7 @@ import json
 import logging
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -51,6 +51,8 @@ PHASE_METRIC_TO_JOINTS = {
         "elbow_lock_angle": [11, 12, 13, 14, 15, 16],
     },
 }
+from src.reference.pro_pose import PRO_BLOCK_POSE, PRO_FLIGHT_POSE
+
 JOINT_ANGLE_LABELS = {
     13: ("left_elbow_angle", "L elbow"),
     14: ("right_elbow_angle", "R elbow"),
@@ -241,6 +243,55 @@ def _joint_flags_for_phase(phase_name: str, deviations: Dict[str, Dict[str, str]
     return flags
 
 
+def _draw_pro_ghost(
+    frame: np.ndarray,
+    swimmer_keypoints: np.ndarray,
+    phase: str,
+    width: int,
+    height: int,
+    torso_length: float
+) -> None:
+    """Render a 'Pro' ghost skeleton relative to the swimmer's position."""
+
+    if phase == "block_phase":
+        pro_template = PRO_BLOCK_POSE
+    elif phase == "flight_phase":
+        pro_template = PRO_FLIGHT_POSE
+    else:
+        return
+
+    # Use swimmer's hip midpoint as anchor
+    l_hip = swimmer_keypoints[23]
+    r_hip = swimmer_keypoints[24]
+    anchor = (l_hip[:2] + r_hip[:2]) / 2.0
+
+    # Scale factor based on swimmer's torso (normalized units)
+    # Average pro might have slightly different proportions but this aligns them
+    scale = torso_length / 0.15 # 0.15 is roughly the torso len in pro_template
+
+    pro_points: Dict[int, Tuple[int, int]] = {}
+    for j_idx, offset in pro_template.items():
+        scaled_offset = np.array(offset) * scale
+        # Invert Y for screen coordinates if template is biomechanical (Y up)
+        # But our template is [x, y] relative to hip, x right, y down
+        pt_norm = anchor + scaled_offset
+        pro_points[j_idx] = _pixel_coord(pt_norm, width, height)
+
+    # Draw Ghost Skeleton
+    ghost_color = (255, 255, 255) # White ghost
+    alpha = 0.3
+    overlay = frame.copy()
+
+    for start_j, end_j in POSE_CONNECTIONS:
+        if start_j in pro_points and end_j in pro_points:
+            cv2.line(overlay, pro_points[start_j], pro_points[end_j], ghost_color, 2)
+
+    for pt in pro_points.values():
+        cv2.circle(overlay, pt, 3, ghost_color, -1)
+
+    cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
+
+
 def _pixel_coord(point: np.ndarray, width: int, height: int) -> Tuple[int, int]:
     """Convert normalized or pixel coordinates to integer pixel positions.
 
@@ -321,6 +372,12 @@ def render_overlay(
             frame_keypoints = keypoints[frame_index, :, :2]
             frame_angles = angles_df.loc[frame_index]
 
+            # Draw Pro Ghost
+            if "torso_length" in angles_df.columns:
+                t_len = float(frame_angles["torso_length"])
+                if np.isfinite(t_len):
+                    _draw_pro_ghost(frame, keypoints[frame_index], phase_name, width, height, t_len)
+
             for start_joint, end_joint in connectivity:
                 start_point = _pixel_coord(frame_keypoints[start_joint], width, height)
                 end_point = _pixel_coord(frame_keypoints[end_joint], width, height)
@@ -370,6 +427,24 @@ def render_overlay(
                         raise RuntimeError(
                             f"Failed to draw labels for joint {joint_index} on frame {frame_index}: {exc}"
                         ) from exc
+
+            # Draw CoM Trajectory Arc
+            # Use a window of previous frames to draw the trail
+            trail_window = 30
+            for i in range(max(0, frame_index - trail_window), frame_index):
+                if "com_x" in angles_df.columns and "com_y" in angles_df.columns:
+                    p1 = _pixel_coord(angles_df.iloc[i][["com_x", "com_y"]].values, width, height)
+                    p2 = _pixel_coord(angles_df.iloc[i+1][["com_x", "com_y"]].values, width, height)
+                    # Fade color based on age
+                    alpha = (i - (frame_index - trail_window)) / trail_window
+                    color = (int(255 * alpha), int(100 * alpha), 0)
+                    cv2.line(frame, p1, p2, color, 2)
+
+            # Draw current CoM point
+            if "com_x" in angles_df.columns and "com_y" in angles_df.columns:
+                com_point = _pixel_coord(angles_df.iloc[frame_index][["com_x", "com_y"]].values, width, height)
+                cv2.drawMarker(frame, com_point, (255, 165, 0), cv2.MARKER_CROSS, 15, 2)
+                cv2.putText(frame, "CoM", (com_point[0] + 10, com_point[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 165, 0), 1)
 
             try:
                 cv2.putText(

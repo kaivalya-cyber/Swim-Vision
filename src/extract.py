@@ -46,6 +46,7 @@ if LEGACY_PYTHON.exists() and Path(sys.executable).resolve() != LEGACY_PYTHON.re
 import cv2
 import mediapipe.python.solutions.pose as mp_pose
 import numpy as np
+from mediapipe.framework.formats import landmark_pb2
 
 
 logging.basicConfig(
@@ -353,6 +354,10 @@ def extract_keypoints(
                 ) from exc
 
             if result.pose_landmarks is None:
+                # If we have multiple swimmers, we could check multi_pose_landmarks
+                # but legacy Solutions API only supports one.
+                # However, MediaPipe can return multiple landmarks in some versions.
+                # Here we stick to the most confident one.
                 LOGGER.warning("No pose detected in frame %s (%s).", frame_index, frame_path.name)
                 keypoints = np.zeros((33, 4), dtype=np.float32)
                 confidence = np.zeros((33,), dtype=np.float32)
@@ -362,6 +367,23 @@ def extract_keypoints(
                     width,
                     height,
                 )
+
+                # Temporal consistency: if we have a previous detection, check for jumps
+                if keypoints_per_frame:
+                    prev_kp = keypoints_per_frame[-1]
+                    # Only check if previous frame had a detection
+                    if np.max(prev_kp[:, 3]) > 0.1:
+                        # Compute distance for well-tracked points
+                        mask = (confidence > 0.5) & (prev_kp[:, 3] > 0.5)
+                        if np.any(mask):
+                            dist = np.linalg.norm(keypoints[mask, :2] - prev_kp[mask, :2], axis=1).mean()
+                            if dist > 0.15: # Significant jump in normalized coordinates
+                                LOGGER.warning("Pose jump detected at frame %s (dist=%.3f). Likely background interference.", frame_index, dist)
+                                # If confidence is lower than previous, ignore this detection
+                                if np.mean(confidence) < np.mean(prev_kp[:, 3]) * 0.8:
+                                    LOGGER.info("Ignoring low-confidence jump.")
+                                    keypoints = np.zeros((33, 4), dtype=np.float32)
+                                    confidence = np.zeros((33,), dtype=np.float32)
 
             mean_confidence = float(np.mean(confidence))
             LOGGER.info("Frame %s mean confidence: %.3f", frame_index, mean_confidence)
@@ -488,6 +510,73 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Use MediaPipe model complexity 0 instead of 1 for faster inference.",
     )
     return parser
+
+
+def auto_detect_crop(video_path: Path, swimmer_index: int = 0) -> tuple[int, int, int, int] | None:
+    """Heuristically detect the target swimmer and return an optimal crop.
+
+    Args:
+        video_path: Path to the raw video.
+
+    Returns:
+        Crop tuple (x, y, w, h) or None.
+    """
+
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        return None
+
+    # Sample a frame from the beginning where the swimmer is on the block
+    # We skip first few frames for stability
+    for _ in range(5): capture.read()
+    success, frame = capture.read()
+    capture.release()
+
+    if not success or frame is None:
+        return None
+
+    height, width = frame.shape[:2]
+
+    # Heuristic: Swimmers are usually in the center or slightly offset
+    # We run MediaPipe Pose on the full frame to find the main person
+    try:
+        pose, _ = _initialize_pose_with_fallback()
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        result = pose.process(rgb_frame)
+        pose.close()
+
+        # For legacy MediaPipe, multi-person is hard.
+        # We can try to detect multiple people by running on sub-regions
+        # or using a different model, but for now we improve the logic
+        # to find the "swimmer-like" person.
+
+        if result.pose_landmarks:
+            # Find the bounding box of the detected landmarks
+            lms = result.pose_landmarks.landmark
+            xs = [lm.x for lm in lms]
+            ys = [lm.y for lm in lms]
+
+            x_min, x_max = min(xs), max(xs)
+            y_min, y_max = min(ys), max(ys)
+
+            # Add padding
+            w = (x_max - x_min) * 1.5
+            h = (y_max - y_min) * 1.5
+            center_x = (x_min + x_max) / 2
+            center_y = (y_min + y_max) / 2
+
+            crop_x = int(max(0, (center_x - w/2) * width))
+            crop_y = int(max(0, (center_y - h/2) * height))
+            crop_w = int(min(width - crop_x, w * width))
+            crop_h = int(min(height - crop_y, h * height))
+
+            LOGGER.info("Auto-detected crop: %s", (crop_x, crop_y, crop_w, crop_h))
+            return crop_x, crop_y, crop_w, crop_h
+
+    except Exception as exc:
+        LOGGER.warning("Auto-crop detection failed: %s", exc)
+
+    return None
 
 
 def main() -> int:

@@ -6,9 +6,13 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
+import cv2
+import numpy as np
 import pandas as pd
 
 
@@ -65,9 +69,95 @@ def compare_clips(clip_a: str, clip_b: str, results_dir: str) -> Path:
     comparison[f"{prefix_b}_measured"] = pd.to_numeric(comparison[f"{prefix_b}_measured"], errors="coerce")
     comparison["measured_delta"] = comparison[f"{prefix_a}_measured"] - comparison[f"{prefix_b}_measured"]
 
+    # Heuristic for progress:
+    # For most angles, we want to be closer to optimal.
+    # For velocity, higher is better.
+    def calculate_improvement(row: pd.Series) -> str:
+        metric = str(row["metric"])
+        delta = row["measured_delta"]
+        if pd.isna(delta): return "N/A"
+
+        if metric == "velocity":
+            return "IMPROVED" if delta > 0 else "REGRESSED"
+
+        # For angles, check if we got closer to optimal
+        # This is a simplification.
+        dev_a = abs(row[f"{prefix_a}_deviation"])
+        dev_b = abs(row[f"{prefix_b}_deviation"])
+        if dev_a < dev_b:
+            return "IMPROVED"
+        elif dev_a > dev_b:
+            return "REGRESSED"
+        else:
+            return "STABLE"
+
+    comparison["progress_status"] = comparison.apply(calculate_improvement, axis=1)
+
     output_path = results_path / f"{clip_a}_vs_{clip_b}_comparison.csv"
     comparison.to_csv(output_path, index=False)
     LOGGER.info("Saved comparison CSV to %s", output_path)
+    return output_path
+
+
+def create_side_by_side_video(clip_a: str, clip_b: str, results_dir: Path) -> Path:
+    """Generate a side-by-side synchronized video of two annotated clips."""
+
+    video_a_path = results_dir / f"{clip_a}_annotated.mp4"
+    video_b_path = results_dir / f"{clip_b}_annotated.mp4"
+    output_path = results_dir / f"{clip_a}_vs_{clip_b}_sync.mp4"
+
+    if not video_a_path.exists() or not video_b_path.exists():
+        LOGGER.warning("Annotated videos not found for side-by-side sync.")
+        return output_path
+
+    cap_a = cv2.VideoCapture(str(video_a_path))
+    cap_b = cv2.VideoCapture(str(video_b_path))
+
+    width_a = int(cap_a.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height_a = int(cap_a.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = cap_a.get(cv2.CAP_PROP_FPS)
+
+    width_b = int(cap_b.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height_b = int(cap_b.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    # Target height is the max of both
+    target_h = max(height_a, height_b)
+    # Scale both to target height while maintaining aspect ratio
+    scale_a = target_h / height_a
+    new_w_a = int(width_a * scale_a)
+
+    scale_b = target_h / height_b
+    new_w_b = int(width_b * scale_b)
+
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(str(output_path), fourcc, fps, (new_w_a + new_w_b, target_h))
+
+    while True:
+        ret_a, frame_a = cap_a.read()
+        ret_b, frame_b = cap_b.read()
+
+        if not ret_a and not ret_b:
+            break
+
+        # Handle different lengths by padding with black frames
+        if not ret_a:
+            frame_a = np.zeros((target_h, new_w_a, 3), dtype=np.uint8)
+        else:
+            frame_a = cv2.resize(frame_a, (new_w_a, target_h))
+
+        if not ret_b:
+            frame_b = np.zeros((target_h, new_w_b, 3), dtype=np.uint8)
+        else:
+            frame_b = cv2.resize(frame_b, (new_w_b, target_h))
+
+        combined = np.hstack((frame_a, frame_b))
+        writer.write(combined)
+
+    cap_a.release()
+    cap_b.release()
+    writer.release()
+
+    LOGGER.info("Saved side-by-side video to %s", output_path)
     return output_path
 
 
@@ -78,6 +168,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--clip_a", required=True, help="First clip identifier.")
     parser.add_argument("--clip_b", required=True, help="Second clip identifier.")
     parser.add_argument("--results_dir", default="results", help="Directory containing deviation JSON files.")
+    parser.add_argument("--video", action="store_true", help="Generate side-by-side comparison video.")
     return parser
 
 
@@ -86,13 +177,19 @@ def main() -> int:
 
     parser = build_arg_parser()
     args = parser.parse_args()
+    results_path = Path(args.results_dir)
     try:
         output_path = compare_clips(args.clip_a, args.clip_b, args.results_dir)
+        print(f"Comparison CSV: {output_path}")
+
+        if args.video:
+            video_path = create_side_by_side_video(args.clip_a, args.clip_b, results_path)
+            print(f"Comparison Video: {video_path}")
+
     except Exception as exc:
         LOGGER.error("Clip comparison failed: %s", exc)
         return 1
 
-    print(output_path)
     return 0
 
 

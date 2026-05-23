@@ -82,6 +82,61 @@ def _acute_angle(angle_degrees: float) -> float:
     return min(bounded, 180.0 - bounded)
 
 
+def compute_com(frame: np.ndarray, aspect_ratio: float) -> np.ndarray:
+    """Compute the Center of Mass (CoM) for a single frame using segmental weights.
+
+    Args:
+        frame: Keypoint array for a single frame [33, 2].
+        aspect_ratio: Width / Height for scaling.
+
+    Returns:
+        CoM in [x, y] format.
+    """
+
+    # Segment weights and CoM positions (proximal to distal ratio)
+    # Ref: Winter, D. A. (2009). Biomechanics and Motor Control of Human Movement.
+    segments = [
+        # Torso: Shoulders & Hips. Weight 0.433
+        {"joints": [11, 12, 23, 24], "weight": 0.433, "ratio": 0.5},
+        # Head: Nose. Weight 0.081
+        {"joints": [0], "weight": 0.081, "ratio": 1.0},
+        # Upper Arms. Weight 0.028 each
+        {"joints": [11, 13], "weight": 0.028, "ratio": 0.436},
+        {"joints": [12, 14], "weight": 0.028, "ratio": 0.436},
+        # Forearms. Weight 0.016 each
+        {"joints": [13, 15], "weight": 0.016, "ratio": 0.430},
+        {"joints": [14, 16], "weight": 0.016, "ratio": 0.430},
+        # Thighs. Weight 0.100 each
+        {"joints": [23, 25], "weight": 0.100, "ratio": 0.433},
+        {"joints": [24, 26], "weight": 0.100, "ratio": 0.433},
+        # Shanks. Weight 0.0465 each
+        {"joints": [25, 27], "weight": 0.0465, "ratio": 0.433},
+        {"joints": [26, 28], "weight": 0.0465, "ratio": 0.433},
+        # Feet. Weight 0.0145 each
+        {"joints": [27, 31], "weight": 0.0145, "ratio": 0.5},
+        {"joints": [28, 32], "weight": 0.0145, "ratio": 0.5},
+    ]
+
+    total_weight = 0.0
+    com_accum = np.zeros(2, dtype=np.float32)
+
+    for seg in segments:
+        joints = [_scale_point(frame[j], aspect_ratio) for j in seg["joints"]]
+        # Compute segmental center
+        if len(joints) == 1:
+            seg_com = joints[0]
+        elif len(joints) == 2:
+            seg_com = joints[0] + seg["ratio"] * (joints[1] - joints[0])
+        else:
+            # For torso, take midpoint of the 4 points
+            seg_com = np.mean(joints, axis=0)
+
+        com_accum += seg_com * seg["weight"]
+        total_weight += seg["weight"]
+
+    return com_accum / total_weight if total_weight > 0 else np.zeros(2)
+
+
 def body_linearity(shoulder_mid: np.ndarray, hip_mid: np.ndarray, ankle_mid: np.ndarray) -> float:
     """Compute deviation from straight alignment using y-sorted body landmarks.
 
@@ -130,13 +185,14 @@ def _scale_point(point: np.ndarray, aspect_ratio: float) -> np.ndarray:
     return scaled_point
 
 
-def compute_all_angles(keypoints: np.ndarray, width: int | None = None, height: int | None = None) -> pd.DataFrame:
+def compute_all_angles(keypoints: np.ndarray, width: int | None = None, height: int | None = None, fps: float = 30.0) -> pd.DataFrame:
     """Compute all requested SwimVision joint-angle metrics per frame.
 
     Args:
         keypoints: Array with shape ``[T, 33, 4]``.
         width: Frame width in pixels used for aspect-ratio correction.
         height: Frame height in pixels used for aspect-ratio correction.
+        fps: Video frame rate for velocity computation.
 
     Returns:
         A DataFrame indexed by frame containing the defined angle metrics.
@@ -210,6 +266,13 @@ def compute_all_angles(keypoints: np.ndarray, width: int | None = None, height: 
         streamline_angle = min(left_streamline_angle, right_streamline_angle)
         elbow_extension = max(left_elbow_angle, right_elbow_angle)
 
+        torso_length = float(np.linalg.norm(torso_vector))
+
+        # Angle of Attack: Arm angle relative to horizontal at entry
+        # We use the shoulder-to-wrist vector
+        arm_vector = wrist_midpoint - shoulder_midpoint
+        angle_of_attack = _acute_angle(_vector_angle_against_axis(arm_vector, horizontal_axis))
+
         record: Dict[str, float] = {
             "frame": float(frame_index),
             "front_knee_angle": angle_between(left_hip, left_knee, left_ankle),
@@ -224,12 +287,45 @@ def compute_all_angles(keypoints: np.ndarray, width: int | None = None, height: 
             "elbow_extension": elbow_extension,
             "elbow_lock_angle": elbow_extension,
             "shoulder_hip_alignment": angle_between(hip_to_shoulder, np.zeros(2, dtype=np.float32), ankle_to_hip),
+            "torso_x": float(hip_midpoint[0]),
+            "torso_y": float(hip_midpoint[1]),
+            "torso_length": torso_length,
+            "com_x": float(compute_com(frame, aspect_ratio)[0]),
+            "com_y": float(compute_com(frame, aspect_ratio)[1]),
+            "angle_of_attack": angle_of_attack,
         }
         records.append(record)
 
     angles_df = pd.DataFrame.from_records(records)
     angles_df["frame"] = angles_df["frame"].astype(int)
     angles_df = angles_df.set_index("frame")
+
+    # Compute Velocity (m/s)
+    # Assume torso length is 0.6 meters for scaling
+    # We use a 5-frame rolling average for smoothness
+    torso_meters_ref = 0.6
+
+    # Estimate median torso length during the middle of the clip (likely more stable)
+    valid_torso = angles_df["torso_length"].dropna()
+    if not valid_torso.empty:
+        median_torso_scaled = float(valid_torso.median())
+        meters_per_scaled_unit = torso_meters_ref / median_torso_scaled if median_torso_scaled > 0 else 0
+    else:
+        meters_per_scaled_unit = 0
+
+    dx = angles_df["torso_x"].diff()
+    dy = angles_df["torso_y"].diff()
+    dist_scaled = np.sqrt(dx**2 + dy**2)
+    velocity_mps = dist_scaled * meters_per_scaled_unit * fps
+    angles_df["velocity"] = velocity_mps.rolling(window=5, center=True).mean()
+
+    # Compute Stability Score (0-100)
+    # Based on the variance of body_linearity and torso_lean during stable tracking
+    linearity_var = angles_df["body_linearity"].rolling(window=10).std().fillna(0)
+    lean_var = angles_df["torso_lean"].rolling(window=10).std().fillna(0)
+    stability = 100.0 - (linearity_var * 2.0 + lean_var * 1.5)
+    angles_df["stability_score"] = np.clip(stability, 0, 100)
+
     return angles_df[
         [
             "front_knee_angle",
@@ -243,6 +339,12 @@ def compute_all_angles(keypoints: np.ndarray, width: int | None = None, height: 
             "streamline_angle",
             "elbow_extension",
             "elbow_lock_angle",
+            "velocity",
+            "com_x",
+            "com_y",
+            "torso_length",
+            "angle_of_attack",
+            "stability_score",
         ]
     ]
 
@@ -263,6 +365,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--clip_id", help="Clip identifier used to name the output CSV.")
     parser.add_argument("--width", type=int, help="Optional frame width for aspect-ratio correction.")
     parser.add_argument("--height", type=int, help="Optional frame height for aspect-ratio correction.")
+    parser.add_argument("--fps", type=float, default=30.0, help="Video frame rate for velocity computation.")
     return parser
 
 
@@ -286,7 +389,7 @@ def main() -> int:
         return 1
 
     try:
-        angles_df = compute_all_angles(keypoints, width=args.width, height=args.height)
+        angles_df = compute_all_angles(keypoints, width=args.width, height=args.height, fps=args.fps)
     except Exception as exc:
         LOGGER.error("Failed to compute joint angles: %s", exc)
         return 1

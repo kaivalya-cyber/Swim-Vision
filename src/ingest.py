@@ -34,6 +34,60 @@ def _safe_float(value: float, default: float) -> float:
     return float(value) if np.isfinite(value) else float(default)
 
 
+def analyze_entry_splash(video_path: str, entry_start: int, entry_end: int, crop: list[int] | None = None) -> float:
+    """Quantify the splash at entry using frame differencing in the water region.
+
+    Args:
+        video_path: Path to the input video.
+        entry_start: Frame index when entry begins.
+        entry_end: Frame index when entry ends.
+        crop: Optional crop region [x, y, w, h].
+
+    Returns:
+        Normalized splash score (higher means more splash).
+    """
+
+    capture = cv2.VideoCapture(video_path)
+    if not capture.isOpened():
+        return 0.0
+
+    splash_scores = []
+    prev_frame = None
+
+    # We focus on the water surface area
+    # If we don't have water surface detection here, we estimate it
+    # from the lower part of the frame.
+
+    for idx in range(entry_end + 1):
+        success, frame = capture.read()
+        if not success:
+            break
+        if idx < entry_start:
+            continue
+
+        if crop:
+            frame = frame[crop[1]:crop[1]+crop[3], crop[0]:crop[0]+crop[2]]
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray = cv2.GaussianBlur(gray, (21, 21), 0)
+
+        if prev_frame is not None:
+            frame_delta = cv2.absdiff(prev_frame, gray)
+            thresh = cv2.threshold(frame_delta, 25, 255, cv2.THRESH_BINARY)[1]
+            splash_score = np.sum(thresh) / float(thresh.size)
+            splash_scores.append(splash_score)
+
+        prev_frame = gray
+
+    capture.release()
+
+    if not splash_scores:
+        return 0.0
+
+    # Return peak splash normalized to a 0-100 scale (heuristic)
+    return float(np.max(splash_scores) * 100.0)
+
+
 def _detect_water_surface(frame: np.ndarray) -> int:
     """Estimate the water surface row using edges and line detection.
 
