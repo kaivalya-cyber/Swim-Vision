@@ -440,8 +440,24 @@ yt-dlp -o data/raw/dressel2020olympic.%(ext)s "YOUR_SOURCE_URL"
 - Underwater entry causes keypoint dropout after the entry phase. Block and flight measurements are more reliable than late entry/underwater frames.
 - `body_linearity` is the most sensitive metric to crop quality. If it reads above `15°` during a clearly extended flight phase, re-check the crop with `--preview`.
 - The Apple Silicon GPU path in MediaPipe Tasks was unstable during implementation. CPU-only mode is required for the current working setup.
-- The one-command pipeline now works for a similar new clip, but crop selection is still the main per-video manual decision.
 - The training code remains in the repository, but the project is currently validated as a deterministic analysis pipeline rather than a trained multi-class benchmark system.
+
+## Advanced Features (New!)
+### Automated Analysis
+- **Auto-Crop:** No more manual coordinates! SwimVision now uses an initial AI pass to detect the swimmer and crop the video automatically.
+- **Auto-Beep Detection:** Using audio signal processing, the system automatically identifies the starter's horn to calculate reaction time with millisecond precision.
+
+### Biomechanical Metrics
+- **Center of Mass (CoM) Trajectory:** Visualize the physical "arc" of your jump. See if you're jumping too high (wasted energy) or too flat (limited distance).
+- **Entry Splash Score:** A new metric that quantifies water disturbance. Lower scores indicate a "cleaner" entry with less drag.
+- **Breakout Distance:** Automatically estimates how many meters you travel underwater before your first stroke.
+- **Stability Score:** A 0-100 rating of your body control during the flight phase.
+- **Angle of Attack:** Precise measurement of your arm entry angle relative to the water surface.
+
+### Visualization & Feedback
+- **Virtual "Pro" Overlay:** See a "ghost" skeleton of an elite swimmer overlaid on your own video. Compare your block posture and flight alignment against the best in the world.
+- **Actionable Drills:** Every report now includes specific swimming drills (e.g., 'Weight Shift', 'Pencil Dives') mapped to your technical deviations.
+- **Side-by-Side Comparison:** Generate synchronized comparison videos of two different dives to track your progress visually.
 
 ## Novel Contribution
 The practical contribution of the current implementation is not just the original research framing, but a fully working local analysis loop: crop-aware extraction, robust single-clip phase segmentation, verified metric computation, deviation scoring, annotated overlay generation, and PDF/JSON report output from a single command.

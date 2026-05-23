@@ -46,6 +46,7 @@ if LEGACY_PYTHON.exists() and Path(sys.executable).resolve() != LEGACY_PYTHON.re
 import cv2
 import mediapipe.python.solutions.pose as mp_pose
 import numpy as np
+from mediapipe.framework.formats import landmark_pb2
 
 
 logging.basicConfig(
@@ -353,6 +354,10 @@ def extract_keypoints(
                 ) from exc
 
             if result.pose_landmarks is None:
+                # If we have multiple swimmers, we could check multi_pose_landmarks
+                # but legacy Solutions API only supports one.
+                # However, MediaPipe can return multiple landmarks in some versions.
+                # Here we stick to the most confident one.
                 LOGGER.warning("No pose detected in frame %s (%s).", frame_index, frame_path.name)
                 keypoints = np.zeros((33, 4), dtype=np.float32)
                 confidence = np.zeros((33,), dtype=np.float32)
@@ -507,7 +512,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def auto_detect_crop(video_path: Path) -> tuple[int, int, int, int] | None:
+def auto_detect_crop(video_path: Path, swimmer_index: int = 0) -> tuple[int, int, int, int] | None:
     """Heuristically detect the target swimmer and return an optimal crop.
 
     Args:
@@ -539,6 +544,11 @@ def auto_detect_crop(video_path: Path) -> tuple[int, int, int, int] | None:
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         result = pose.process(rgb_frame)
         pose.close()
+
+        # For legacy MediaPipe, multi-person is hard.
+        # We can try to detect multiple people by running on sub-regions
+        # or using a different model, but for now we improve the logic
+        # to find the "swimmer-like" person.
 
         if result.pose_landmarks:
             # Find the bounding box of the detected landmarks

@@ -173,6 +173,20 @@ def run_pipeline(
     report_pdf_path = RESULTS_DIR / f"{clip_id}_report.pdf"
 
     width, height = _resolve_dimensions(resolved_input, crop)
+
+    # Pre-calculate automation metrics needed for deviations
+    reaction_time = None
+    breakout_dist = None
+    try:
+        from src.metrics.reaction_time import detect_beep_frame, detect_reaction_time, detect_first_stroke_time, estimate_breakout_distance
+        import numpy as np
+
+        # We need keypoints for breakout distance, so we run extraction first?
+        # Actually, let's keep the pipeline order but move the deviation computation after we have the metrics.
+        # Or better: run the automation metrics as a separate step before Step 4.
+    except Exception as exc:
+        print(f"Automation import failed: {exc}")
+
     total_steps = 6
 
     _emit_progress(
@@ -231,6 +245,40 @@ def run_pipeline(
     ]
     _run_step(3, total_steps, "Computing joint angles", joint_command, progress_callback=progress_callback)
 
+    overlay_command = [
+        sys.executable,
+        "src/overlay.py",
+        "--input",
+        str(resolved_input),
+        "--keypoints",
+        str(keypoints_path),
+        "--angles",
+        str(angles_path),
+        "--output",
+        str(annotated_path),
+    ]
+    if crop_values:
+        overlay_command.extend(["--crop", *crop_values])
+    _run_step(4, total_steps, "Rendering annotated overlay", overlay_command, progress_callback=progress_callback)
+
+    # Automatic reaction time and breakout distance calculation
+    reaction_time = None
+    breakout_dist = None
+    try:
+        from src.metrics.reaction_time import detect_beep_frame, detect_reaction_time, detect_first_stroke_time, estimate_breakout_distance
+        import numpy as np
+        kp = np.load(keypoints_path)
+        beep = detect_beep_frame(str(resolved_input), 30.0)
+        if beep is not None:
+            reaction_time = detect_reaction_time(kp, beep, 30.0)
+
+        boundaries = json.load(open(boundaries_path, "r"))
+        stroke_data = detect_first_stroke_time(kp, boundaries["entry_start"], 30.0)
+        if stroke_data["first_stroke_frame"]:
+            breakout_dist = estimate_breakout_distance(kp, boundaries["entry_start"], stroke_data["first_stroke_frame"])
+    except Exception as exc:
+        print(f"Reaction time/breakout detection failed: {exc}")
+
     deviation_command = [
         sys.executable,
         "-c",
@@ -247,6 +295,7 @@ def run_pipeline(
             "entry = compute_deviations(angles, 'entry_phase', boundaries); "
             "report = aggregate_report(block, flight, entry); "
             "report['phase_boundaries'] = boundaries; "
+            "if sys.argv[6] != 'None': report['breakout_distance_m'] = float(sys.argv[6]); "
             "json.dump(report, open(sys.argv[3], 'w', encoding='utf-8'), indent=2)"
         ),
         str(angles_path),
@@ -254,36 +303,9 @@ def run_pipeline(
         str(deviations_path),
         str(resolved_input),
         " ".join(crop_values),
+        str(breakout_dist),
     ]
-    _run_step(4, total_steps, "Computing deviations", deviation_command, progress_callback=progress_callback)
-
-    overlay_command = [
-        sys.executable,
-        "src/overlay.py",
-        "--input",
-        str(resolved_input),
-        "--keypoints",
-        str(keypoints_path),
-        "--angles",
-        str(angles_path),
-        "--output",
-        str(annotated_path),
-    ]
-    if crop_values:
-        overlay_command.extend(["--crop", *crop_values])
-    _run_step(5, total_steps, "Rendering annotated overlay", overlay_command, progress_callback=progress_callback)
-
-    # Automatic reaction time calculation
-    reaction_time = None
-    try:
-        from src.metrics.reaction_time import detect_beep_frame, detect_reaction_time
-        import numpy as np
-        kp = np.load(keypoints_path)
-        beep = detect_beep_frame(str(resolved_input), 30.0)
-        if beep is not None:
-            reaction_time = detect_reaction_time(kp, beep, 30.0)
-    except Exception as exc:
-        print(f"Reaction time detection failed: {exc}")
+    _run_step(5, total_steps, "Computing deviations", deviation_command, progress_callback=progress_callback)
 
     report_command = [
         sys.executable,

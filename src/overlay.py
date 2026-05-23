@@ -8,7 +8,7 @@ import json
 import logging
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -51,6 +51,8 @@ PHASE_METRIC_TO_JOINTS = {
         "elbow_lock_angle": [11, 12, 13, 14, 15, 16],
     },
 }
+from src.reference.pro_pose import PRO_BLOCK_POSE, PRO_FLIGHT_POSE
+
 JOINT_ANGLE_LABELS = {
     13: ("left_elbow_angle", "L elbow"),
     14: ("right_elbow_angle", "R elbow"),
@@ -241,6 +243,55 @@ def _joint_flags_for_phase(phase_name: str, deviations: Dict[str, Dict[str, str]
     return flags
 
 
+def _draw_pro_ghost(
+    frame: np.ndarray,
+    swimmer_keypoints: np.ndarray,
+    phase: str,
+    width: int,
+    height: int,
+    torso_length: float
+) -> None:
+    """Render a 'Pro' ghost skeleton relative to the swimmer's position."""
+
+    if phase == "block_phase":
+        pro_template = PRO_BLOCK_POSE
+    elif phase == "flight_phase":
+        pro_template = PRO_FLIGHT_POSE
+    else:
+        return
+
+    # Use swimmer's hip midpoint as anchor
+    l_hip = swimmer_keypoints[23]
+    r_hip = swimmer_keypoints[24]
+    anchor = (l_hip[:2] + r_hip[:2]) / 2.0
+
+    # Scale factor based on swimmer's torso (normalized units)
+    # Average pro might have slightly different proportions but this aligns them
+    scale = torso_length / 0.15 # 0.15 is roughly the torso len in pro_template
+
+    pro_points: Dict[int, Tuple[int, int]] = {}
+    for j_idx, offset in pro_template.items():
+        scaled_offset = np.array(offset) * scale
+        # Invert Y for screen coordinates if template is biomechanical (Y up)
+        # But our template is [x, y] relative to hip, x right, y down
+        pt_norm = anchor + scaled_offset
+        pro_points[j_idx] = _pixel_coord(pt_norm, width, height)
+
+    # Draw Ghost Skeleton
+    ghost_color = (255, 255, 255) # White ghost
+    alpha = 0.3
+    overlay = frame.copy()
+
+    for start_j, end_j in POSE_CONNECTIONS:
+        if start_j in pro_points and end_j in pro_points:
+            cv2.line(overlay, pro_points[start_j], pro_points[end_j], ghost_color, 2)
+
+    for pt in pro_points.values():
+        cv2.circle(overlay, pt, 3, ghost_color, -1)
+
+    cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
+
+
 def _pixel_coord(point: np.ndarray, width: int, height: int) -> Tuple[int, int]:
     """Convert normalized or pixel coordinates to integer pixel positions.
 
@@ -320,6 +371,12 @@ def render_overlay(
             joint_flags = _joint_flags_for_phase(phase_name, normalized_deviations)
             frame_keypoints = keypoints[frame_index, :, :2]
             frame_angles = angles_df.loc[frame_index]
+
+            # Draw Pro Ghost
+            if "torso_length" in angles_df.columns:
+                t_len = float(frame_angles["torso_length"])
+                if np.isfinite(t_len):
+                    _draw_pro_ghost(frame, keypoints[frame_index], phase_name, width, height, t_len)
 
             for start_joint, end_joint in connectivity:
                 start_point = _pixel_coord(frame_keypoints[start_joint], width, height)

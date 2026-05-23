@@ -39,6 +39,8 @@ FLAG_EXPLANATIONS = {
     "elbow_lock_angle": "Elbow position may soften the streamline during underwater travel.",
     "velocity": "Low velocity indicates a loss of momentum during this phase.",
     "splash_score": "A high splash score suggests an inefficient water entry that creates excess drag.",
+    "angle_of_attack": "The angle at which your arms enter the water. An optimal angle minimizes resistance.",
+    "stability_score": "Measures body control during flight. High scores indicate a steady, streamlined jump.",
 }
 DRILL_SUGGESTIONS = {
     "front_knee_angle": "Practice 'Weight Shift' drills: ensure your center of gravity is forward so your front knee is loaded and ready to explode.",
@@ -52,6 +54,8 @@ DRILL_SUGGESTIONS = {
     "elbow_lock_angle": "Try 'Push-and-Glide' drills: maintain a rock-solid streamline for at least 5 meters after every push-off.",
     "velocity": "Focus on explosive power drills like 'Box Jumps' or 'Resistance Starts' to increase takeoff and breakout speed.",
     "splash_score": "Practice 'Clean Entry' drills: focus on entering through a single 'hole' in the water with minimal surface disturbance.",
+    "angle_of_attack": "Try 'Angle Entry' drills: use a visual marker to guide your arms into the water at a steep, piercing angle.",
+    "stability_score": "Practice 'Tight Streamline' jumps and core-strengthening exercises to maintain a rock-solid position in mid-air.",
 }
 
 
@@ -155,6 +159,13 @@ def generate_report(
         pdf.drawString(72, 675, f"Overall Severity: {report_payload['overall_severity']}")
         pdf.drawString(72, 655, f"Reaction Time (ms): {reaction_time if reaction_time is not None else 'N/A'}")
 
+        breakout_dist = deviations.get("breakout_distance_m")
+        if breakout_dist is not None:
+            pdf.drawString(72, 635, f"Breakout Distance (m): {breakout_dist:.2f}")
+            current_video_y = 615
+        else:
+            current_video_y = 635
+
         # Calculate mean confidence for the report
         total_conf = []
         for p in ["block_phase", "flight_phase", "entry_phase"]:
@@ -163,7 +174,7 @@ def generate_report(
                 # but we can pass it in if we update the pipeline.
                 pass
 
-        pdf.drawString(72, 635, f"Annotated Video: {annotated_video_path}")
+        pdf.drawString(72, current_video_y, f"Annotated Video: {annotated_video_path}")
         pdf.showPage()
 
         _draw_page_header(pdf, "Phase Breakdown")

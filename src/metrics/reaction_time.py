@@ -97,6 +97,35 @@ def detect_reaction_time(keypoints: np.ndarray, audio_beep_frame: int, fps: floa
     return None
 
 
+def estimate_breakout_distance(keypoints: np.ndarray, entry_frame: int, first_stroke_frame: int) -> float | None:
+    """Estimate the breakout distance from entry to first stroke.
+
+    Args:
+        keypoints: Keypoint array [T, 33, 4].
+        entry_frame: Frame index of water entry.
+        first_stroke_frame: Frame index of first stroke.
+
+    Returns:
+        Estimated distance in meters.
+    """
+
+    if first_stroke_frame <= entry_frame:
+        return 0.0
+
+    # Assume torso length is 0.6m for scale
+    torso_len_scaled = np.linalg.norm(
+        keypoints[:, [11, 12], :2].mean(axis=1) - keypoints[:, [23, 24], :2].mean(axis=1),
+        axis=1
+    )
+    median_scale = 0.6 / np.median(torso_len_scaled[entry_frame:first_stroke_frame])
+
+    # Calculate horizontal displacement of torso
+    torso_x = keypoints[:, [11, 12, 23, 24], 0].mean(axis=1)
+    dist_scaled = abs(torso_x[first_stroke_frame] - torso_x[entry_frame])
+
+    return float(dist_scaled * median_scale)
+
+
 def detect_first_stroke_time(keypoints: np.ndarray, entry_frame: int, fps: float) -> Dict[str, Any]:
     """Detect the time to first stroke using peak wrist velocity after entry.
 
@@ -197,7 +226,12 @@ def main() -> int:
     payload: Dict[str, Any] = {"reaction_time_ms": reaction_time}
     if args.entry_frame is not None:
         try:
-            payload.update(detect_first_stroke_time(keypoints, args.entry_frame, args.fps))
+            stroke_data = detect_first_stroke_time(keypoints, args.entry_frame, args.fps)
+            payload.update(stroke_data)
+            if stroke_data["first_stroke_frame"]:
+                payload["breakout_distance_m"] = estimate_breakout_distance(
+                    keypoints, args.entry_frame, stroke_data["first_stroke_frame"]
+                )
         except Exception as exc:
             LOGGER.error("First-stroke detection failed: %s", exc)
             return 1

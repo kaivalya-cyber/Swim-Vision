@@ -29,8 +29,8 @@ LOGGER = logging.getLogger(__name__)
 
 PHASE_TO_METRICS = {
     "block_phase": ["front_knee_angle", "rear_knee_angle", "hip_angle", "torso_lean"],
-    "flight_phase": ["body_linearity", "entry_angle", "elbow_extension", "velocity"],
-    "entry_phase": ["streamline_angle", "elbow_lock_angle", "velocity", "splash_score"],
+    "flight_phase": ["body_linearity", "entry_angle", "elbow_extension", "velocity", "stability_score"],
+    "entry_phase": ["streamline_angle", "elbow_lock_angle", "velocity", "splash_score", "angle_of_attack"],
 }
 FLAG_ORDER = ["OPTIMAL", "MINOR", "SIGNIFICANT", "CRITICAL"]
 

@@ -268,6 +268,11 @@ def compute_all_angles(keypoints: np.ndarray, width: int | None = None, height: 
 
         torso_length = float(np.linalg.norm(torso_vector))
 
+        # Angle of Attack: Arm angle relative to horizontal at entry
+        # We use the shoulder-to-wrist vector
+        arm_vector = wrist_midpoint - shoulder_midpoint
+        angle_of_attack = _acute_angle(_vector_angle_against_axis(arm_vector, horizontal_axis))
+
         record: Dict[str, float] = {
             "frame": float(frame_index),
             "front_knee_angle": angle_between(left_hip, left_knee, left_ankle),
@@ -287,6 +292,7 @@ def compute_all_angles(keypoints: np.ndarray, width: int | None = None, height: 
             "torso_length": torso_length,
             "com_x": float(compute_com(frame, aspect_ratio)[0]),
             "com_y": float(compute_com(frame, aspect_ratio)[1]),
+            "angle_of_attack": angle_of_attack,
         }
         records.append(record)
 
@@ -313,6 +319,13 @@ def compute_all_angles(keypoints: np.ndarray, width: int | None = None, height: 
     velocity_mps = dist_scaled * meters_per_scaled_unit * fps
     angles_df["velocity"] = velocity_mps.rolling(window=5, center=True).mean()
 
+    # Compute Stability Score (0-100)
+    # Based on the variance of body_linearity and torso_lean during stable tracking
+    linearity_var = angles_df["body_linearity"].rolling(window=10).std().fillna(0)
+    lean_var = angles_df["torso_lean"].rolling(window=10).std().fillna(0)
+    stability = 100.0 - (linearity_var * 2.0 + lean_var * 1.5)
+    angles_df["stability_score"] = np.clip(stability, 0, 100)
+
     return angles_df[
         [
             "front_knee_angle",
@@ -329,6 +342,9 @@ def compute_all_angles(keypoints: np.ndarray, width: int | None = None, height: 
             "velocity",
             "com_x",
             "com_y",
+            "torso_length",
+            "angle_of_attack",
+            "stability_score",
         ]
     ]
 
