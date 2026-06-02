@@ -26,13 +26,31 @@ import {
   GitCommit,
   ChevronRight,
   Layers,
+  Trash2,
+  Square,
+  CheckSquare,
+  Wrench,
 } from "lucide-react";
 import { Link } from "react-router-dom";
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  Title,
+  Tooltip,
+  Filler,
+  Legend,
+} from "chart.js";
+import { Line } from "react-chartjs-2";
 
 import { fetchTrends, compareSwimmers } from "@/api";
 import { SiteHeader } from "@/components/site-header";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Filler, Legend);
 
 const METRIC_CONFIG = {
   stroke_rate: { label: "Stroke Rate", unit: "spm", icon: Activity, color: "#60a5fa", higherIsBetter: true },
@@ -251,6 +269,25 @@ function computeBaselinePct(curVal, baseVal, higherIsBetter) {
   return { pct: diff, cls: "text-white/40" };
 }
 
+function evaluateExpression(expression, metrics) {
+  if (!expression || !metrics) return null;
+  try {
+    const safeExpr = expression.replace(/[a-z_][a-z0-9_]*/gi, (match) => {
+      const val = metrics[match];
+      if (val != null && typeof val === "number") return String(val);
+      if (match === "pi") return String(Math.PI);
+      if (match === "e") return String(Math.E);
+      throw new Error(`Unknown metric: ${match}`);
+    });
+    const result = Function(`"use strict"; return (${safeExpr})`)();
+    return typeof result === "number" && isFinite(result) ? result : null;
+  } catch {
+    return null;
+  }
+}
+
+const CUSTOM_METRIC_COLORS = ["#f472b6", "#a78bfa", "#34d399", "#fbbf24", "#fb923c", "#60a5fa", "#f87171", "#2dd4bf"];
+
 export function TrendsPage() {
   const [trends, setTrends] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -269,6 +306,15 @@ export function TrendsPage() {
   const [baselineIdx, setBaselineIdx] = useState(null);
   const [crosshairIdx, setCrosshairIdx] = useState(null);
   const [zoomedMetric, setZoomedMetric] = useState(null);
+  const [selectedSessions, setSelectedSessions] = useState(new Set());
+  const [showMetricBuilder, setShowMetricBuilder] = useState(false);
+  const [customMetrics, setCustomMetrics] = useState(() => {
+    try { return typeof window !== "undefined" ? JSON.parse(localStorage.getItem("swimvision-custom-metrics") || "[]") : []; }
+    catch { return []; }
+  });
+  const [newMetricName, setNewMetricName] = useState("");
+  const [newMetricExpr, setNewMetricExpr] = useState("");
+  const [newMetricUnit, setNewMetricUnit] = useState("");
 
   const [cbPalette, setCbPalette] = useState(() => {
     return typeof window !== "undefined" ? localStorage.getItem("swimvision-cb-palette") === "true" : false;
@@ -408,12 +454,90 @@ export function TrendsPage() {
   // Zoom modal data
   const zoomData = useMemo(() => {
     if (!zoomedMetric) return null;
-    const cfg = activeMetricConfig[zoomedMetric] || { label: zoomedMetric, unit: "", color: "#60a5fa" };
-    const vals = sparklineData[zoomedMetric];
+    const allCfg = { ...activeMetricConfig };
+    customMetrics.forEach((cm) => { allCfg[cm.name] = { label: cm.name, unit: cm.unit || "", color: cm.color || "#60a5fa", higherIsBetter: true }; });
+    const cfg = allCfg[zoomedMetric] || { label: zoomedMetric, unit: "", color: "#60a5fa" };
+    const vals = allSparklineData[zoomedMetric];
     const dates = sparklineDates;
     if (!vals || vals.length < 2) return null;
     return { metric: zoomedMetric, cfg, vals, dates, color: cfg.color };
-  }, [zoomedMetric, activeMetricConfig, sparklineData, sparklineDates]);
+  }, [zoomedMetric, activeMetricConfig, customMetrics, allSparklineData, sparklineDates]);
+
+  // Custom metrics values per session
+  const customMetricValues = useMemo(() => {
+    if (!customMetrics.length) return {};
+    const result = {};
+    customMetrics.forEach((cm) => {
+      result[cm.name] = sessions.map((s) => evaluateExpression(cm.expression, s.metrics));
+    });
+    return result;
+  }, [customMetrics, sessions]);
+
+  // Merge custom metrics into sparklineData
+  const allSparklineData = useMemo(() => {
+    return { ...sparklineData, ...customMetricValues };
+  }, [sparklineData, customMetricValues]);
+
+  function toggleSelectSession(idx) {
+    setSelectedSessions((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx);
+      else next.add(idx);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    if (selectedSessions.size === sessions.length) {
+      setSelectedSessions(new Set());
+    } else {
+      setSelectedSessions(new Set(sessions.map((_, i) => i)));
+    }
+  }
+
+  function handleExportSelectedCSV() {
+    if (!selectedSessions.size) return;
+    const metricKeys = Object.keys(metricTrends);
+    const selSessions = [...selectedSessions].sort((a, b) => a - b).map((i) => sessions[i]);
+    const headers = ["Session", "Date", "Mode", "Severity", ...metricKeys];
+    const rows = selSessions.map((s) => {
+      const row = [s.session_id, s.date || "", s.analysis_mode, s.overall_severity];
+      metricKeys.forEach((k) => { row.push(s.metrics?.[k] != null ? s.metrics[k] : ""); });
+      return row;
+    });
+    const csvContent = [headers.join(","), ...rows.map((r) => r.map((v) => (typeof v === "string" && v.includes(",") ? `"${v}"` : v)).join(","))].join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a"); link.href = url; link.download = `swimvision-selected-${new Date().toISOString().slice(0, 10)}.csv`; link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function handleAddCustomMetric() {
+    const name = newMetricName.trim();
+    const expr = newMetricExpr.trim();
+    if (!name || !expr) return;
+    if (customMetrics.find((m) => m.name === name)) return;
+    const testVal = evaluateExpression(expr, sessions[0]?.metrics || {});
+    if (testVal == null) return;
+    const newCm = {
+      name,
+      expression: expr,
+      unit: newMetricUnit.trim(),
+      color: CUSTOM_METRIC_COLORS[customMetrics.length % CUSTOM_METRIC_COLORS.length],
+    };
+    const updated = [...customMetrics, newCm];
+    setCustomMetrics(updated);
+    localStorage.setItem("swimvision-custom-metrics", JSON.stringify(updated));
+    setNewMetricName("");
+    setNewMetricExpr("");
+    setNewMetricUnit("");
+  }
+
+  function handleRemoveCustomMetric(name) {
+    const updated = customMetrics.filter((m) => m.name !== name);
+    setCustomMetrics(updated);
+    localStorage.setItem("swimvision-custom-metrics", JSON.stringify(updated));
+  }
 
   return (
     <div className="min-h-screen pb-16 sm:pb-24">
@@ -501,6 +625,7 @@ export function TrendsPage() {
             <button onClick={() => { setCompareMode(!compareMode); if (compareMode) setComparison(null); }} className={`inline-flex items-center gap-1 text-[10px] sm:text-xs rounded-full px-2 sm:px-3 py-1 transition ${compareMode ? "bg-blue-500/20 text-blue-400 border border-blue-500/30" : "text-white/50 hover:text-white border border-white/10 hover:border-white/20"}`}><GitCompare className="h-3 w-3 sm:h-3.5 sm:w-3.5" /><span className="hidden sm:inline">Compare</span></button>
             <button onClick={() => setTheme(theme === "dark" ? "light" : "dark")} className="inline-flex items-center gap-1 text-[10px] sm:text-xs rounded-full px-2 sm:px-3 py-1 transition text-white/50 hover:text-white border border-white/10 hover:border-white/20 hide-mobile" title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}>{theme === "dark" ? <Sun className="h-3 w-3 sm:h-3.5 sm:w-3.5" /> : <Moon className="h-3 w-3 sm:h-3.5 sm:w-3.5" />}</button>
             <button onClick={toggleCb} className={`inline-flex items-center gap-1 text-[10px] sm:text-xs rounded-full px-2 sm:px-3 py-1 transition ${cbPalette ? "bg-purple-500/20 text-purple-400 border-purple-500/30" : "text-white/50 hover:text-white border border-white/10 hover:border-white/20"}`} title="Toggle color-blind friendly palette"><Eye className="h-3 w-3 sm:h-3.5 sm:w-3.5" /><span className="hidden sm:inline">{cbPalette ? "CB" : ""}</span></button>
+            <button onClick={() => setShowMetricBuilder(true)} className={`inline-flex items-center gap-1 text-[10px] sm:text-xs rounded-full px-2 sm:px-3 py-1 transition ${customMetrics.length > 0 ? "bg-blue-500/20 text-blue-400 border-blue-500/30" : "text-white/50 hover:text-white border border-white/10 hover:border-white/20"}`} title="Build custom metric"><Wrench className="h-3 w-3 sm:h-3.5 sm:w-3.5" /><span className="hidden sm:inline">{customMetrics.length > 0 ? customMetrics.length : "Build"}</span></button>
             {baselineIdx != null && sessions[baselineIdx] && (
               <button onClick={() => setBaselineIdx(null)} className="inline-flex items-center gap-1 text-[10px] sm:text-xs rounded-full px-2 sm:px-3 py-1 transition bg-emerald-500/15 text-emerald-400 border border-emerald-500/30" title="Clear baseline">
                 <GitCommit className="h-3 w-3 sm:h-3.5 sm:w-3.5" />
@@ -564,10 +689,15 @@ export function TrendsPage() {
                   <div className="flex items-center gap-2 sm:gap-3 group">
                     {(() => { const Icon = primaryCfg.icon || Activity; return <Icon className="h-4 w-4 sm:h-5 sm:w-5" style={{ color: primaryCfg.color }} />; })()}
                     <h2 className="text-base sm:text-lg font-semibold text-white">{primaryCfg.label}</h2>
-                    <Sparkline values={sparklineData[primaryMetric]} dates={sparklineDates} color={primaryCfg.color} metric={primaryMetric} width={120} height={40} unit={primaryCfg.unit} goalValue={parsedGoal} crosshairIdx={crosshairIdx} onCrosshairChange={setCrosshairIdx} />
+                    <Sparkline values={allSparklineData[primaryMetric]} dates={sparklineDates} color={primaryCfg.color} metric={primaryMetric} width={120} height={40} unit={primaryCfg.unit} goalValue={parsedGoal} crosshairIdx={crosshairIdx} onCrosshairChange={setCrosshairIdx} />
                     <button onClick={() => setZoomedMetric(primaryMetric)} className="opacity-0 group-hover:opacity-100 transition ml-0.5" title="Zoom chart">
                       <Maximize2 className="h-3 w-3 sm:h-3.5 sm:w-3.5 text-white/40 hover:text-white/70" />
                     </button>
+                    {customMetrics.map((cm) => (
+                      <span key={cm.name} className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
+                        <button onClick={() => setZoomedMetric(cm.name)} title={`Zoom ${cm.name}`}><Maximize2 className="h-3 w-3 text-white/30 hover:text-white/60" /></button>
+                      </span>
+                    ))}
                   </div>
                   <TrendDirection direction={summary.primary_trend.direction} change={summary.primary_trend.change} />
                 </div>
@@ -589,6 +719,13 @@ export function TrendsPage() {
                   const cfg = activeMetricConfig[metric] || { label: metric, unit: "", color: "#60a5fa" };
                   return (<TrendBar key={metric} value={trend.mean || 0} maxValue={Math.max(...Object.values(metricTrends).map((t) => t.mean || 0), 1)} color={cfg.color} label={`${cfg.label} (${cfg.unit})`} sparkValues={sparklineData[metric]} sparkDates={sparklineDates} sparkMetric={metric} unit={cfg.unit} goalValue={metric === primaryMetric ? parsedGoal : null} crosshairIdx={crosshairIdx} onCrosshairChange={setCrosshairIdx} onZoom={setZoomedMetric} />);
                 })}
+                {customMetrics.map((cm) => {
+                  const vals = customMetricValues[cm.name] || [];
+                  const validVals = vals.filter((v) => v != null);
+                  const mean = validVals.length > 0 ? validVals.reduce((a, b) => a + b, 0) / validVals.length : 0;
+                  const allMax = Math.max(...Object.values(metricTrends).map((t) => t.mean || 0), ...Object.values(customMetricValues).map((vs) => Math.max(...(vs || []).filter((v) => v != null), 0)), 1);
+                  return (<TrendBar key={cm.name} value={mean} maxValue={allMax} color={cm.color} label={`${cm.name} (${cm.unit || "—"})`} sparkValues={vals} sparkDates={sparklineDates} sparkMetric={cm.name} unit={cm.unit || "—"} crosshairIdx={crosshairIdx} onCrosshairChange={setCrosshairIdx} onZoom={setZoomedMetric} />);
+                })}
               </div>
             </CardContent></Card>
 
@@ -604,14 +741,28 @@ export function TrendsPage() {
                   </>)}
                 </div>
               </div>
+              {/* Batch Action Bar */}
+              {selectedSessions.size > 0 && (
+                <div className="mb-3 flex items-center gap-2 sm:gap-3 px-3 py-2 rounded-lg bg-blue-500/[0.06] border border-blue-500/20">
+                  <span className="text-[10px] sm:text-xs text-blue-400">{selectedSessions.size} selected</span>
+                  <button onClick={handleExportSelectedCSV} className="inline-flex items-center gap-1 text-[10px] sm:text-xs text-blue-400 hover:text-blue-300 transition"><Download className="h-3 w-3" />Export CSV</button>
+                  <button onClick={() => setSelectedSessions(new Set())} className="inline-flex items-center gap-1 text-[10px] sm:text-xs text-white/40 hover:text-white/70 transition"><X className="h-3 w-3" />Clear</button>
+                </div>
+              )}
               <div className="overflow-x-auto -mx-4 sm:mx-0">
                 <table className="w-full text-[11px] sm:text-sm">
                   <thead><tr className="border-b border-white/10 text-white/50">
+                    <th className="py-1.5 sm:py-2 text-left font-medium px-2 sm:px-0 w-6">
+                      <button onClick={toggleSelectAll} className="text-white/30 hover:text-white/60 transition">
+                        {selectedSessions.size === sessions.length && sessions.length > 0 ? <CheckSquare className="h-3.5 w-3.5" /> : <Square className="h-3.5 w-3.5" />}
+                      </button>
+                    </th>
                     <th className="py-1.5 sm:py-2 text-left font-medium px-2 sm:px-0">Session</th>
                     <th className="py-1.5 sm:py-2 text-left font-medium px-1">Date</th>
                     <th className="py-1.5 sm:py-2 text-left font-medium px-1 hide-mobile">Mode</th>
                     <th className="py-1.5 sm:py-2 text-left font-medium px-1">Severity</th>
                     <th className="py-1.5 sm:py-2 text-right font-medium px-1">{primaryCfg.label}</th>
+                    {customMetrics.map((cm) => (<th key={cm.name} className="py-1.5 sm:py-2 text-right font-medium px-1">{cm.name}</th>))}
                     {baselineIdx != null && <th className="py-1.5 sm:py-2 text-right font-medium px-1">% vs Base</th>}
                     <th className="py-1.5 sm:py-2 text-left font-medium w-16 sm:w-28 no-print px-1"></th>
                   </tr></thead>
@@ -628,7 +779,12 @@ export function TrendsPage() {
 
                       return (
                         <React.Fragment key={idx}>
-                          <tr className={`border-b border-white/5 hover:bg-white/[0.04] cursor-pointer transition-colors ${isOutlier ? "bg-amber-500/[0.04]" : ""} ${isAlert ? "bg-red-500/[0.06]" : ""} ${isBase ? "bg-emerald-500/[0.06]" : ""}`} onClick={() => setExpandedSessionIdx(prev => prev === idx ? null : idx)}>
+                          <tr className={`border-b border-white/5 hover:bg-white/[0.04] cursor-pointer transition-colors ${isOutlier ? "bg-amber-500/[0.04]" : ""} ${isAlert ? "bg-red-500/[0.06]" : ""} ${isBase ? "bg-emerald-500/[0.06]" : ""} ${selectedSessions.has(idx) ? "bg-blue-500/[0.06]" : ""}`} onClick={() => setExpandedSessionIdx(prev => prev === idx ? null : idx)}>
+                            <td className="py-2 sm:py-3 px-2 sm:px-0" onClick={(e) => e.stopPropagation()}>
+                              <button onClick={() => toggleSelectSession(idx)} className="text-white/30 hover:text-white/60 transition">
+                                {selectedSessions.has(idx) ? <CheckSquare className="h-3.5 w-3.5" /> : <Square className="h-3.5 w-3.5" />}
+                              </button>
+                            </td>
                             <td className="py-2 sm:py-3 text-white/80 px-2 sm:px-0 truncate max-w-[80px] sm:max-w-none">
                               <div className="flex items-center gap-1">
                                 <ChevronRight className={`h-3 w-3 text-white/30 transition-transform flex-shrink-0 ${isExpanded ? "rotate-90" : ""}`} />
@@ -639,6 +795,10 @@ export function TrendsPage() {
                             <td className="py-2 sm:py-3 px-1 hide-mobile"><span className="text-white/60">{session.analysis_mode}</span></td>
                             <td className="py-2 sm:py-3 px-1"><Badge className={session.overall_severity === "CRITICAL" ? "bg-red-500/15 text-red-400 border-red-500/30" : session.overall_severity === "SIGNIFICANT" ? "bg-orange-500/15 text-orange-400 border-orange-500/30" : session.overall_severity === "MINOR" ? "bg-yellow-500/15 text-yellow-400 border-yellow-500/30" : "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"}>{session.overall_severity}</Badge></td>
                             <td className={`py-2 sm:py-3 text-right px-1 ${isOutlier ? "text-amber-400 font-medium" : isAlert ? "text-red-400 font-medium" : isBase ? "text-emerald-400 font-medium" : "text-white/70"}`}>{session.metrics?.[primaryMetric]?.toFixed(1) || "—"}</td>
+                            {customMetrics.map((cm) => {
+                              const val = evaluateExpression(cm.expression, session.metrics);
+                              return (<td key={cm.name} className="py-2 sm:py-3 text-right px-1 text-white/60 font-mono tabular-nums">{val != null ? val.toFixed(2) : "—"}</td>);
+                            })}
                             {baselineIdx != null && (
                               <td className={`py-2 sm:py-3 text-right px-1 font-medium ${isBase ? "text-emerald-400" : baselineInfo?.cls || "text-white/40"}`}>
                                 {isBase ? "Baseline" : baselineInfo ? `${baselineInfo.pct > 0 ? "+" : ""}${baselineInfo.pct.toFixed(1)}%` : "—"}
@@ -656,7 +816,7 @@ export function TrendsPage() {
                           {/* Session Explorer Panel */}
                           {isExpanded && (
                             <tr className="border-b border-white/5 bg-black/20">
-                              <td colSpan={baselineIdx != null ? 7 : 6} className="p-3 sm:p-4 expand-panel">
+                              <td colSpan={7 + customMetrics.length + (baselineIdx != null ? 1 : 0)} className="p-3 sm:p-4 expand-panel">
                                 <div className="space-y-3">
                                   <div className="flex items-center gap-2 text-[10px] sm:text-xs text-white/40">
                                     <Layers className="h-3 w-3 sm:h-3.5 sm:w-3.5" />
@@ -707,7 +867,7 @@ export function TrendsPage() {
           </div>
         )}
 
-        {/* Zoom Modal */}
+        {/* Zoom Modal with Chart.js */}
         {zoomedMetric && zoomData && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 no-print" onClick={() => setZoomedMetric(null)}>
             <Card className="w-full max-w-3xl max-h-[90vh] overflow-auto" onClick={e => e.stopPropagation()}>
@@ -720,79 +880,57 @@ export function TrendsPage() {
                   </div>
                   <button onClick={() => setZoomedMetric(null)} className="text-white/40 hover:text-white/70 transition"><X className="h-4 w-4 sm:h-5 sm:w-5" /></button>
                 </div>
-                <div className="flex justify-center">
-                  <svg width="600" height="280" className="w-full max-w-2xl" viewBox="0 0 600 280">
-                    {(() => {
-                      const vals = zoomData.vals;
-                      const dates = zoomData.dates;
-                      if (!vals || vals.length < 2) return null;
-                      const pad = { top: 20, right: 40, bottom: 40, left: 50 };
-                      const w = 600 - pad.left - pad.right;
-                      const h = 280 - pad.top - pad.bottom;
-                      const min = Math.min(...vals);
-                      const max = Math.max(...vals);
-                      const range = max - min || 1;
-
-                      const dots = vals.map((v, i) => ({
-                        x: pad.left + (i / (vals.length - 1)) * w,
-                        y: pad.top + h - ((v - min) / range) * h,
-                        v,
-                      }));
-
-                      const pts = dots.map(d => `${d.x.toFixed(1)},${d.y.toFixed(1)}`).join(" ");
-                      const gId = `zoom-fill-${zoomData.metric}`;
-
-                      // Y-axis gridlines
-                      const yTicks = 5;
-                      const yLines = Array.from({ length: yTicks }, (_, i) => {
-                        const val = min + (range / (yTicks - 1)) * i;
-                        const y = pad.top + h - ((val - min) / range) * h;
-                        return { val, y };
-                      });
-
-                      // X-axis labels
-                      const xLabels = dates && dates.length === vals.length ? dates : vals.map((_, i) => i);
-
-                      return (
-                        <>
-                          <defs>
-                            <linearGradient id={gId} x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="0%" stopColor={zoomData.color} stopOpacity="0.2" />
-                              <stop offset="100%" stopColor={zoomData.color} stopOpacity="0.02" />
-                            </linearGradient>
-                          </defs>
-                          {/* Gridlines */}
-                          {yLines.map((yl, i) => (
-                            <g key={i}>
-                              <line x1={pad.left} y1={yl.y} x2={pad.left + w} y2={yl.y} stroke="rgba(255,255,255,0.06)" strokeWidth="0.5" />
-                              <text x={pad.left - 6} y={yl.y + 3} textAnchor="end" fill="rgba(255,255,255,0.3)" fontSize="9">{yl.val.toFixed(1)}</text>
-                            </g>
-                          ))}
-                          {/* X-axis labels (show subset for readability) */}
-                          {(() => {
-                            const step = Math.max(1, Math.floor(xLabels.length / 6));
-                            return xLabels.map((lbl, i) => {
-                              if (i % step !== 0 && i !== xLabels.length - 1) return null;
-                              const x = pad.left + (i / (vals.length - 1)) * w;
-                              return <text key={i} x={x} y={pad.top + h + 18} textAnchor="middle" fill="rgba(255,255,255,0.3)" fontSize="8" className="truncate" style={{ maxWidth: 60 }}>{typeof lbl === "string" && lbl.length > 10 ? lbl.slice(0, 10) : lbl}</text>;
-                            });
-                          })()}
-                          {/* Area fill */}
-                          <polygon points={`${pad.left},${pad.top + h} ${pts} ${pad.left + w},${pad.top + h}`} fill={`url(#${gId})`} />
-                          {/* Line */}
-                          <polyline points={pts} fill="none" stroke={zoomData.color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                          {/* Data points */}
-                          {dots.map((d, i) => (
-                            <circle key={i} cx={d.x} cy={d.y} r={3} fill={zoomData.color} stroke="#fff" strokeWidth="1" />
-                          ))}
-                          {/* X-axis line */}
-                          <line x1={pad.left} y1={pad.top + h} x2={pad.left + w} y2={pad.top + h} stroke="rgba(255,255,255,0.15)" strokeWidth="1" />
-                          {/* Y-axis line */}
-                          <line x1={pad.left} y1={pad.top} x2={pad.left} y2={pad.top + h} stroke="rgba(255,255,255,0.15)" strokeWidth="1" />
-                        </>
-                      );
-                    })()}
-                  </svg>
+                <div className="h-64 sm:h-80">
+                  <Line
+                    data={{
+                      labels: zoomData.dates || zoomData.vals.map((_, i) => i),
+                      datasets: [{
+                        label: zoomData.cfg.label,
+                        data: zoomData.vals,
+                        borderColor: zoomData.color,
+                        backgroundColor: zoomData.color + "20",
+                        fill: true,
+                        tension: 0.3,
+                        pointRadius: 4,
+                        pointBackgroundColor: zoomData.color,
+                        pointBorderColor: "#fff",
+                        pointBorderWidth: 1.5,
+                        pointHoverRadius: 6,
+                        borderWidth: 2.5,
+                      }],
+                    }}
+                    options={{
+                      responsive: true,
+                      maintainAspectRatio: false,
+                      interaction: { mode: "index", intersect: false },
+                      plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                          backgroundColor: "rgba(17,17,25,0.95)",
+                          titleColor: "rgba(255,255,255,0.7)",
+                          bodyColor: "#fff",
+                          borderColor: "rgba(255,255,255,0.1)",
+                          borderWidth: 1,
+                          padding: 10,
+                          cornerRadius: 8,
+                          displayColors: false,
+                          callbacks: {
+                            label: (ctx) => `${ctx.parsed.y.toFixed(2)} ${zoomData.cfg.unit}`,
+                          },
+                        },
+                      },
+                      scales: {
+                        x: {
+                          grid: { color: "rgba(255,255,255,0.05)" },
+                          ticks: { color: "rgba(255,255,255,0.3)", font: { size: 10 }, maxRotation: 45, maxTicksLimit: 8 },
+                        },
+                        y: {
+                          grid: { color: "rgba(255,255,255,0.05)" },
+                          ticks: { color: "rgba(255,255,255,0.3)", font: { size: 10 }, callback: (v) => v.toFixed(1) },
+                        },
+                      },
+                    }}
+                  />
                 </div>
                 <div className="grid grid-cols-4 gap-2 sm:gap-3 text-center pt-2 border-t border-white/10">
                   <div><p className="text-[10px] sm:text-xs text-white/40">Min</p><p className="text-sm sm:text-base text-white">{Math.min(...zoomData.vals).toFixed(1)}</p></div>
@@ -800,6 +938,48 @@ export function TrendsPage() {
                   <div><p className="text-[10px] sm:text-xs text-white/40">Mean</p><p className="text-sm sm:text-base text-white">{(zoomData.vals.reduce((a, b) => a + b, 0) / zoomData.vals.length).toFixed(1)}</p></div>
                   <div><p className="text-[10px] sm:text-xs text-white/40">Range</p><p className="text-sm sm:text-base text-white">{(Math.max(...zoomData.vals) - Math.min(...zoomData.vals)).toFixed(1)}</p></div>
                 </div>
+              </CardContent>
+            </Card>
+          </div>
+        )}
+
+        {/* Custom Metric Builder Modal */}
+        {showMetricBuilder && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 no-print" onClick={() => setShowMetricBuilder(false)}>
+            <Card className="w-full max-w-md" onClick={e => e.stopPropagation()}>
+              <CardContent className="p-4 sm:p-5 space-y-3">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-base sm:text-lg font-semibold text-white flex items-center gap-2"><Wrench className="h-4 w-4" />Custom Metric Builder</h2>
+                  <button onClick={() => setShowMetricBuilder(false)} className="text-white/40 hover:text-white/70 transition"><X className="h-4 w-4" /></button>
+                </div>
+                <p className="text-[10px] sm:text-xs text-white/50">Create derived metrics using existing metric keys (e.g., <code className="text-blue-400">stroke_rate * 2</code>, <code className="text-blue-400">left_elbow_flexion / right_elbow_flexion</code>)</p>
+
+                <div className="space-y-2">
+                  <input type="text" value={newMetricName} onChange={(e) => setNewMetricName(e.target.value)} placeholder="Metric name (e.g. Elbow Ratio)" className="w-full bg-transparent text-white text-sm border border-white/20 rounded px-3 py-2 placeholder:text-white/20" />
+                  <input type="text" value={newMetricExpr} onChange={(e) => setNewMetricExpr(e.target.value)} placeholder="Expression (e.g. left_elbow_flexion / right_elbow_flexion)" className="w-full bg-transparent text-white text-sm border border-white/20 rounded px-3 py-2 placeholder:text-white/20" />
+                  <input type="text" value={newMetricUnit} onChange={(e) => setNewMetricUnit(e.target.value)} placeholder="Unit (e.g. ratio)" className="w-full bg-transparent text-white text-sm border border-white/20 rounded px-3 py-2 placeholder:text-white/20" />
+                </div>
+
+                <div className="flex gap-2">
+                  <button onClick={handleAddCustomMetric} disabled={!newMetricName.trim() || !newMetricExpr.trim()} className="flex-1 rounded-full bg-blue-500/20 text-blue-400 border border-blue-500/30 px-4 py-2 text-xs sm:text-sm transition hover:bg-blue-500/30 disabled:opacity-40">Add Metric</button>
+                  <button onClick={() => setShowMetricBuilder(false)} className="rounded-full text-white/50 hover:text-white border border-white/10 px-4 py-2 text-xs sm:text-sm transition">Cancel</button>
+                </div>
+
+                {customMetrics.length > 0 && (
+                  <div className="space-y-2 pt-2 border-t border-white/10">
+                    <p className="text-[10px] sm:text-xs text-white/40">Current Custom Metrics</p>
+                    {customMetrics.map((cm) => (
+                      <div key={cm.name} className="flex items-center justify-between text-xs sm:text-sm bg-white/[0.03] rounded-lg px-3 py-2 border border-white/5">
+                        <div>
+                          <span className="text-white/80">{cm.name}</span>
+                          <span className="text-white/30 ml-2">{cm.expression}</span>
+                          {cm.unit && <span className="text-white/20 ml-1">({cm.unit})</span>}
+                        </div>
+                        <button onClick={() => handleRemoveCustomMetric(cm.name)} className="text-white/30 hover:text-red-400 transition"><Trash2 className="h-3 w-3" /></button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </CardContent>
             </Card>
           </div>
