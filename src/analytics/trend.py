@@ -13,6 +13,9 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
+from collections import defaultdict
+from datetime import datetime as dt
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -125,6 +128,69 @@ def _is_improvement_direction(metric_name: str) -> bool:
     return True
 
 
+def _aggregate_sessions(
+    sessions: List[SessionRecord],
+    aggregation: str,
+) -> List[SessionRecord]:
+    """Group sessions by week or month and average metrics within each period.
+
+    Args:
+        sessions: List of session records sorted by date.
+        aggregation: "week" or "month".
+
+    Returns:
+        New list of SessionRecord with aggregated metrics per period.
+    """
+
+    if aggregation not in ("week", "month"):
+        return sessions
+
+    groups: Dict[str, List[SessionRecord]] = defaultdict(list)
+    for session in sessions:
+        if not session.date:
+            LOGGER.warning("Skipping session '%s' in aggregation: no date", session.session_id)
+            continue
+        try:
+            d = dt.fromisoformat(session.date[:10])
+        except (ValueError, TypeError):
+            continue
+        if aggregation == "week":
+            iso_week = d.isocalendar()
+            key = f"{iso_week[0]}-W{iso_week[1]:02d}"
+        else:
+            key = d.strftime("%Y-%m")
+        groups[key].append(session)
+
+    aggregated: List[SessionRecord] = []
+    for key in sorted(groups.keys()):
+        group = groups[key]
+        if not group:
+            continue
+        combined_metrics: Dict[str, List[float]] = defaultdict(list)
+        for s in group:
+            for m_name, m_val in s.metrics.items():
+                if m_val is not None and not (isinstance(m_val, float) and np.isnan(m_val)):
+                    combined_metrics[m_name].append(m_val)
+        avg_metrics: Dict[str, float] = {}
+        for m_name, vals in combined_metrics.items():
+            if vals:
+                avg_metrics[m_name] = float(np.mean(vals))
+        severities = [s.overall_severity for s in group]
+        flag_order = ["OPTIMAL", "MINOR", "SIGNIFICANT", "CRITICAL"]
+        worst = max(severities, key=lambda f: flag_order.index(f)) if severities else "OPTIMAL"
+        modes = {s.analysis_mode for s in group}
+        aggregated.append(SessionRecord(
+            session_id=key,
+            date=group[0].date if group else "",
+            analysis_mode=",".join(sorted(modes)) if modes else group[0].analysis_mode,
+            overall_severity=worst,
+            num_cycles=sum(s.num_cycles for s in group),
+            metrics=avg_metrics,
+        ))
+
+    return aggregated
+
+
 def _compute_trend(values: List[float], metric_name: str = "") -> Dict[str, float]:
     """Compute trend statistics for a series of metric values.
 
@@ -179,6 +245,7 @@ def analyze_trends(
     analysis_mode: str = "",
     start_date: str = "",
     end_date: str = "",
+    aggregation: str = "",
 ) -> Dict[str, Any]:
     """Analyze longitudinal trends across multiple SwimVision session reports.
 
@@ -188,6 +255,9 @@ def analyze_trends(
         analysis_mode: Filter sessions by mode (dive, stroke, or empty for all).
         start_date: ISO date string for earliest session to include.
         end_date: ISO date string for latest session to include.
+
+    Returns:
+        aggregation: Group sessions by "week" or "month" (empty for no aggregation).
 
     Returns:
         Dictionary with sessions, trend_summary, and per-metric trend data.
@@ -209,6 +279,13 @@ def analyze_trends(
     if not sessions:
         LOGGER.warning("No valid reports loaded for trend analysis.")
         return {"sessions": [], "trend_summary": {}, "metric_trends": {}}
+
+    # Apply time aggregation if requested
+    if aggregation in ("week", "month"):
+        sessions = _aggregate_sessions(sessions, aggregation)
+        if not sessions:
+            LOGGER.warning("No sessions after aggregation.")
+            return {"sessions": [], "trend_summary": {}, "metric_trends": {}}
 
     # Collect all metric names across sessions
     all_metrics: set[str] = set()

@@ -11,8 +11,10 @@ import {
   GitCompare,
   ArrowRight,
   X,
+  Download,
+  BarChart3,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { Link } from "react-router-dom";
 
 import { fetchTrends, compareSwimmers } from "@/api";
@@ -29,7 +31,51 @@ const METRIC_CONFIG = {
   right_elbow_flexion: { label: "R Elbow Flexion", unit: "°", icon: Activity, color: "#fb923c" },
 };
 
-function TrendBar({ value, maxValue, color, label }) {
+function Sparkline({ values, color, metric, height = 40, width = 120 }) {
+  if (!values || values.length < 2) return null;
+  const vals = values.filter(v => v != null);
+  if (vals.length < 2) return null;
+
+  const safeColor = color || "#60a5fa";
+  const gradientId = `spark-fill-${metric || "default"}-${safeColor.replace("#", "")}`;
+  const min = Math.min(...vals);
+  const max = Math.max(...vals);
+  const range = max - min || 1;
+  const padding = 2;
+  const w = width - padding * 2;
+  const h = height - padding * 2;
+
+  const points = vals.map((v, i) => {
+    const x = padding + (i / (vals.length - 1)) * w;
+    const y = padding + h - ((v - min) / range) * h;
+    return `${x},${y}`;
+  }).join(" ");
+
+  return (
+    <svg width={width} height={height} className="shrink-0">
+      <defs>
+        <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={safeColor} stopOpacity="0.25" />
+          <stop offset="100%" stopColor={safeColor} stopOpacity="0.02" />
+        </linearGradient>
+      </defs>
+      <polygon
+        points={`${padding},${h + padding} ${points} ${width - padding},${h + padding}`}
+        fill={`url(#${gradientId})`}
+      />
+      <polyline
+        points={points}
+        fill="none"
+        stroke={safeColor}
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function TrendBar({ value, maxValue, color, label, sparkValues, sparkMetric }) {
   const pct = maxValue > 0 ? Math.min((value / maxValue) * 100, 100) : 0;
   return (
     <div className="flex items-center gap-2">
@@ -40,6 +86,7 @@ function TrendBar({ value, maxValue, color, label }) {
           style={{ width: `${pct}%`, backgroundColor: color }}
         />
       </div>
+      <Sparkline values={sparkValues} color={color} metric={sparkMetric} />
       <span className="w-14 text-xs text-white/70 text-right">{value.toFixed(1)}</span>
     </div>
   );
@@ -112,6 +159,7 @@ export function TrendsPage() {
   const [analysisMode, setAnalysisMode] = useState("");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
+  const [aggregation, setAggregation] = useState("");
 
   // Comparison mode state
   const [compareMode, setCompareMode] = useState(false);
@@ -126,7 +174,7 @@ export function TrendsPage() {
     async function load() {
       try {
         setLoading(true);
-        const data = await fetchTrends(primaryMetric, swimmerId, analysisMode, startDate, endDate);
+        const data = await fetchTrends(primaryMetric, swimmerId, analysisMode, startDate, endDate, aggregation);
         if (cancelled) return;
         setTrends(data);
         setError("");
@@ -139,7 +187,7 @@ export function TrendsPage() {
     }
     load();
     return () => { cancelled = true; };
-  }, [primaryMetric, swimmerId, analysisMode, startDate, endDate]);
+  }, [primaryMetric, swimmerId, analysisMode, startDate, endDate, aggregation]);
 
   async function handleCompare() {
     if (!swimmerA || !swimmerB) {
@@ -162,11 +210,52 @@ export function TrendsPage() {
     }
   }
 
+  function handleExportCSV() {
+    if (!sessions.length) return;
+
+    const metricKeys = Object.keys(metricTrends);
+    const headers = ["Session", "Date", "Mode", "Severity", ...metricKeys];
+    const rows = sessions.map((s) => {
+      const row = [
+        s.session_id,
+        s.date || "",
+        s.analysis_mode,
+        s.overall_severity,
+      ];
+      metricKeys.forEach((k) => {
+        row.push(s.metrics?.[k] != null ? s.metrics[k] : "");
+      });
+      return row;
+    });
+
+    const csvContent = [
+      headers.join(","),
+      ...rows.map((r) => r.map((v) => (typeof v === "string" && v.includes(",") ? `"${v}"` : v)).join(",")),
+    ].join("\n");
+
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `swimvision-trends-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
   const summary = trends?.trend_summary;
   const sessions = trends?.sessions || [];
   const metricTrends = trends?.metric_trends || {};
   const availableSwimmers = trends?.available_swimmer_ids || [];
   const availableModes = trends?.available_analysis_modes || [];
+
+  // Build sparkline values per metric from sessions
+  const sparklineData = useMemo(() => {
+    const data = {};
+    Object.keys(metricTrends).forEach((metric) => {
+      data[metric] = sessions.map((s) => s.metrics?.[metric]).filter((v) => v != null);
+    });
+    return data;
+  }, [sessions, metricTrends]);
 
   return (
     <div className="min-h-screen pb-24">
@@ -185,7 +274,6 @@ export function TrendsPage() {
         {/* Filter Bar */}
         <Card className="mb-6">
           <CardContent className="flex flex-wrap items-center gap-3 p-4">
-            {/* Swimmer filter */}
             <User className="h-4 w-4 text-white/50" />
             <label className="text-xs text-white/50">Swimmer:</label>
             <select
@@ -199,7 +287,6 @@ export function TrendsPage() {
               ))}
             </select>
 
-            {/* Analysis mode filter */}
             <span className="w-px h-5 bg-white/10 mx-1" />
             <label className="text-xs text-white/50">Mode:</label>
             <select
@@ -211,6 +298,20 @@ export function TrendsPage() {
               {availableModes.map((mode) => (
                 <option key={mode} value={mode} className="bg-gray-900 capitalize">{mode}</option>
               ))}
+            </select>
+
+            {/* Aggregation toggle */}
+            <span className="w-px h-5 bg-white/10 mx-1" />
+            <BarChart3 className="h-4 w-4 text-white/50" />
+            <label className="text-xs text-white/50">Group:</label>
+            <select
+              value={aggregation}
+              onChange={(e) => setAggregation(e.target.value)}
+              className="bg-transparent text-white text-sm border border-white/20 rounded px-2 py-1 min-w-[100px]"
+            >
+              <option value="" className="bg-gray-900">Per session</option>
+              <option value="week" className="bg-gray-900">By week</option>
+              <option value="month" className="bg-gray-900">By month</option>
             </select>
 
             {/* Date range */}
@@ -239,8 +340,18 @@ export function TrendsPage() {
               </button>
             )}
 
-            {/* Compare toggle */}
+            {/* CSV Export */}
             <span className="w-px h-5 bg-white/10 mx-1" />
+            <button
+              onClick={handleExportCSV}
+              disabled={!sessions.length}
+              className="inline-flex items-center gap-1.5 text-xs rounded-full px-3 py-1 transition text-white/50 hover:text-white border border-white/10 hover:border-white/20 disabled:opacity-30"
+            >
+              <Download className="h-3.5 w-3.5" />
+              CSV
+            </button>
+
+            {/* Compare toggle */}
             <button
               onClick={() => { setCompareMode(!compareMode); if (compareMode) setComparison(null); }}
               className={`inline-flex items-center gap-1.5 text-xs rounded-full px-3 py-1 transition ${
@@ -253,10 +364,9 @@ export function TrendsPage() {
               Compare
             </button>
 
-            {/* Active filters summary */}
-            {(swimmerId || analysisMode || startDate || endDate) && (
+            {(swimmerId || analysisMode || startDate || endDate || aggregation) && (
               <span className="text-xs text-white/40 ml-auto">
-                {summary?.num_sessions || 0} session{(summary?.num_sessions || 0) !== 1 ? "s" : ""}
+                {summary?.num_sessions || 0} {aggregation ? aggregation : "session"}{(summary?.num_sessions || 0) !== 1 ? "s" : ""}
               </span>
             )}
           </CardContent>
@@ -321,7 +431,6 @@ export function TrendsPage() {
 
               {comparison && (
                 <div className="space-y-4 pt-2 border-t border-white/10">
-                  {/* Head-to-head summary */}
                   {comparison.comparison && (
                     <div className="grid gap-3 md:grid-cols-3">
                       <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
@@ -356,7 +465,6 @@ export function TrendsPage() {
                     </div>
                   )}
 
-                  {/* Side-by-side metric bars */}
                   {comparison.swimmer_a?.metric_trends && comparison.swimmer_b?.metric_trends && (
                     <div className="space-y-2 pt-2">
                       <p className="text-xs text-white/40 mb-2">Metric Breakdown</p>
@@ -449,12 +557,12 @@ export function TrendsPage() {
               </Card>
             </div>
 
-            {/* Primary Trend */}
+            {/* Primary Trend with Sparkline */}
             {summary.primary_trend && (
               <Card>
                 <CardContent className="p-6">
                   <div className="flex items-center justify-between mb-4">
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-3">
                       {(() => {
                         const cfg = METRIC_CONFIG[primaryMetric] || { icon: Activity, color: "#60a5fa" };
                         const Icon = cfg.icon;
@@ -463,6 +571,7 @@ export function TrendsPage() {
                       <h2 className="text-lg font-semibold text-white">
                         {METRIC_CONFIG[primaryMetric]?.label || primaryMetric}
                       </h2>
+                      <Sparkline values={sparklineData[primaryMetric]} color={METRIC_CONFIG[primaryMetric]?.color || "#60a5fa"} metric={primaryMetric} width={160} height={48} />
                     </div>
                     <TrendDirection
                       direction={summary.primary_trend.direction}
@@ -498,7 +607,7 @@ export function TrendsPage() {
               </Card>
             )}
 
-            {/* All Metric Trends */}
+            {/* All Metric Trends with Sparklines */}
             <Card>
               <CardContent className="p-6">
                 <h2 className="text-lg font-semibold text-white mb-4">All Metric Trends</h2>
@@ -512,6 +621,8 @@ export function TrendsPage() {
                         maxValue={Math.max(...Object.values(metricTrends).map((t) => t.mean || 0), 1)}
                         color={cfg.color}
                         label={`${cfg.label} (${cfg.unit})`}
+                        sparkValues={sparklineData[metric]}
+                        sparkMetric={metric}
                       />
                     );
                   })}
@@ -522,7 +633,18 @@ export function TrendsPage() {
             {/* Session Table */}
             <Card>
               <CardContent className="p-6">
-                <h2 className="text-lg font-semibold text-white mb-4">Session History</h2>
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-lg font-semibold text-white">Session History</h2>
+                  {sessions.length > 0 && (
+                    <button
+                      onClick={handleExportCSV}
+                      className="inline-flex items-center gap-1.5 text-xs text-white/50 hover:text-white transition"
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                      Export CSV
+                    </button>
+                  )}
+                </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>

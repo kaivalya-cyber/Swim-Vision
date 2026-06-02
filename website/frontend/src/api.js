@@ -19,7 +19,7 @@ export async function fetchJob(jobId) {
   return response.json();
 }
 
-export async function fetchTrends(primaryMetric = "stroke_rate", swimmerId = "", analysisMode = "", startDate = "", endDate = "") {
+export async function fetchTrends(primaryMetric = "stroke_rate", swimmerId = "", analysisMode = "", startDate = "", endDate = "", aggregation = "") {
   let url = `/api/trends?primary_metric=${encodeURIComponent(primaryMetric)}`;
   if (swimmerId) {
     url += `&swimmer_id=${encodeURIComponent(swimmerId)}`;
@@ -32,6 +32,9 @@ export async function fetchTrends(primaryMetric = "stroke_rate", swimmerId = "",
   }
   if (endDate) {
     url += `&end_date=${encodeURIComponent(endDate)}`;
+  }
+  if (aggregation) {
+    url += `&aggregation=${encodeURIComponent(aggregation)}`;
   }
   const response = await fetch(url);
   if (!response.ok) {

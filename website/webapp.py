@@ -339,6 +339,7 @@ def trends_analysis() -> Any:
     Accepts ?swimmer_id=... to filter by a specific swimmer.
     Accepts ?analysis_mode=dive|stroke to filter by mode.
     Accepts ?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD for date range.
+    Accepts ?aggregation=week|month to group sessions by time period.
     Accepts ?primary_metric=stroke_rate to set the primary metric.
     """
 
@@ -370,6 +371,7 @@ def trends_analysis() -> Any:
         return jsonify({"error": "No completed reports found for trend analysis."}), 404
 
     primary_metric = request.args.get("primary_metric", "stroke_rate")
+    aggregation = request.args.get("aggregation", "").strip()
     try:
         result = analyze_trends(
             report_paths,
@@ -377,6 +379,7 @@ def trends_analysis() -> Any:
             analysis_mode=analysis_mode_filter,
             start_date=start_date,
             end_date=end_date,
+            aggregation=aggregation,
         )
     except Exception as exc:
         return jsonify({"error": f"Trend analysis failed: {exc}"}), 500
