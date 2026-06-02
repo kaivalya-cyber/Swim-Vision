@@ -19,8 +19,12 @@ export async function fetchJob(jobId) {
   return response.json();
 }
 
-export async function fetchTrends(primaryMetric = "stroke_rate") {
-  const response = await fetch(`/api/trends?primary_metric=${encodeURIComponent(primaryMetric)}`);
+export async function fetchTrends(primaryMetric = "stroke_rate", swimmerId = "") {
+  let url = `/api/trends?primary_metric=${encodeURIComponent(primaryMetric)}`;
+  if (swimmerId) {
+    url += `&swimmer_id=${encodeURIComponent(swimmerId)}`;
+  }
+  const response = await fetch(url);
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
     throw new Error(payload.error || "Could not load trend data.");

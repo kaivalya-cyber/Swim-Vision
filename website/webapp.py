@@ -49,6 +49,7 @@ class JobRecord:
     summary: dict[str, Any] = field(default_factory=dict)
     analysis_mode: str = "dive"
     stroke_start_frame: int = 0
+    swimmer_id: str = ""
 
     def touch(self) -> None:
         self.updated_at = datetime.now().isoformat(timespec="seconds")
@@ -227,6 +228,8 @@ def create_job() -> Any:
     clip_id = request.form.get("clip_id", "").strip() or f"swim_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     clip_id = secure_filename(clip_id) or f"swim_{uuid.uuid4().hex[:8]}"
 
+    swimmer_id = request.form.get("swimmer_id", "").strip() or ""
+
     analysis_mode = request.form.get("analysis_mode", "dive").strip()
     if analysis_mode not in ("dive", "stroke"):
         analysis_mode = "dive"
@@ -258,6 +261,7 @@ def create_job() -> Any:
         crop=crop,
         analysis_mode=analysis_mode,
         stroke_start_frame=stroke_start_frame,
+        swimmer_id=swimmer_id,
     )
     with _jobs_lock:
         _jobs[job_id] = job
@@ -332,9 +336,12 @@ def trends_analysis() -> Any:
     """Run longitudinal trend analysis across completed jobs.
 
     Accepts ?job_ids=id1,id2,... or scans all completed jobs for report JSONs.
+    Accepts ?swimmer_id=... to filter by a specific swimmer.
+    Accepts ?primary_metric=stroke_rate to set the primary metric.
     """
 
     requested_ids = request.args.get("job_ids", "")
+    swimmer_filter = request.args.get("swimmer_id", "").strip()
     with _jobs_lock:
         if requested_ids:
             report_paths = []
@@ -342,12 +349,14 @@ def trends_analysis() -> Any:
                 jid = jid.strip()
                 job = _jobs.get(jid)
                 if job and job.status == "completed" and "report_json" in job.outputs:
-                    report_paths.append(job.outputs["report_json"])
+                    if not swimmer_filter or job.swimmer_id == swimmer_filter:
+                        report_paths.append(job.outputs["report_json"])
         else:
             report_paths = [
                 job.outputs["report_json"]
                 for job in _jobs.values()
                 if job.status == "completed" and "report_json" in job.outputs
+                and (not swimmer_filter or job.swimmer_id == swimmer_filter)
             ]
 
     if not report_paths:
@@ -358,6 +367,14 @@ def trends_analysis() -> Any:
         result = analyze_trends(report_paths, primary_metric=primary_metric)
     except Exception as exc:
         return jsonify({"error": f"Trend analysis failed: {exc}"}), 500
+
+    # Include available swimmer IDs for the frontend filter dropdown
+    with _jobs_lock:
+        swimmer_ids = sorted(
+            {job.swimmer_id for job in _jobs.values() if job.swimmer_id and job.status == "completed"}
+        )
+    result["available_swimmer_ids"] = list(swimmer_ids)
+    result["active_swimmer_id"] = swimmer_filter or ""
 
     return jsonify(result)
 

@@ -6,6 +6,7 @@ import {
   Gauge,
   Timer,
   Dumbbell,
+  User,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
@@ -71,13 +72,14 @@ export function TrendsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [primaryMetric, setPrimaryMetric] = useState("stroke_rate");
+  const [swimmerId, setSwimmerId] = useState("");
 
   useEffect(() => {
     let cancelled = false;
     async function load() {
       try {
         setLoading(true);
-        const data = await fetchTrends(primaryMetric);
+        const data = await fetchTrends(primaryMetric, swimmerId);
         if (cancelled) return;
         setTrends(data);
         setError("");
@@ -90,7 +92,7 @@ export function TrendsPage() {
     }
     load();
     return () => { cancelled = true; };
-  }, [primaryMetric]);
+  }, [primaryMetric, swimmerId]);
 
   const summary = trends?.trend_summary;
   const sessions = trends?.sessions || [];
@@ -109,6 +111,33 @@ export function TrendsPage() {
           <h1 className="text-4xl font-semibold tracking-tight text-white">Performance Trends</h1>
           <p className="mt-2 text-white/50">Longitudinal analysis across completed swim analysis sessions.</p>
         </div>
+
+        {/* Swimmer filter */}
+        {trends?.available_swimmer_ids?.length > 0 && (
+          <Card className="mb-6">
+            <CardContent className="flex items-center gap-4 p-4">
+              <User className="h-4 w-4 text-white/50" />
+              <label className="text-sm text-white/60">Swimmer:</label>
+              <select
+                value={swimmerId}
+                onChange={(e) => setSwimmerId(e.target.value)}
+                className="bg-transparent text-white text-sm border border-white/20 rounded px-3 py-1.5 min-w-[160px]"
+              >
+                <option value="" className="bg-gray-900">All swimmers</option>
+                {trends.available_swimmer_ids.map((sid) => (
+                  <option key={sid} value={sid} className="bg-gray-900">
+                    {sid}
+                  </option>
+                ))}
+              </select>
+              {swimmerId && (
+                <span className="text-xs text-white/40">
+                  Showing {trends.trend_summary?.num_sessions || 0} sessions for {swimmerId}
+                </span>
+              )}
+            </CardContent>
+          </Card>
+        )}
 
         {loading && (
           <Card>
