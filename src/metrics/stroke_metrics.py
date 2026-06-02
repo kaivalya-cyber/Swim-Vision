@@ -41,6 +41,10 @@ class StrokeMetrics:
         stroke_rate: Strokes per minute for this cycle.
         cycle_duration_seconds: Duration of the full cycle.
         symmetry_index: Percentage difference between left/right catch angles.
+        bilateral_elbow_flexion: Mean bilateral elbow flexion for butterfly (degrees).
+        bilateral_hand_speed: Mean bilateral hand speed for butterfly (norm/frame).
+        supine_elbow_flexion: Mean elbow flexion for backstroke catch (degrees).
+        supine_hand_speed: Mean hand speed for backstroke pull (norm/frame).
     """
 
     cycle_index: int
@@ -57,6 +61,10 @@ class StrokeMetrics:
     stroke_rate: float = 0.0
     cycle_duration_seconds: float = 0.0
     symmetry_index: float = 0.0
+    bilateral_elbow_flexion: float = 0.0
+    bilateral_hand_speed: float = 0.0
+    supine_elbow_flexion: float = 0.0
+    supine_hand_speed: float = 0.0
 
 
 def compute_stroke_metrics(
@@ -142,6 +150,10 @@ def compute_stroke_metrics(
                 stroke_rate=stroke_rate,
                 cycle_duration_seconds=cycle_duration,
                 symmetry_index=symmetry_index,
+                bilateral_elbow_flexion=_compute_bilateral_elbow(keypoints, left_start, right_start, left_end, right_end) if cycle.stroke_type == "butterfly" else 0.0,
+                bilateral_hand_speed=_compute_bilateral_speed(keypoints, left_start, right_start, left_end, right_end) if cycle.stroke_type == "butterfly" else 0.0,
+                supine_elbow_flexion=_compute_supine_elbow(keypoints, left_start, right_start, left_end, right_end) if cycle.stroke_type == "backstroke" else 0.0,
+                supine_hand_speed=_compute_supine_speed(keypoints, left_start, right_start, left_end, right_end) if cycle.stroke_type == "backstroke" else 0.0,
             )
         )
 
@@ -305,14 +317,74 @@ def aggregate_stroke_metrics(
         "stroke_rate",
         "cycle_duration_seconds",
         "symmetry_index",
+        "bilateral_elbow_flexion",
+        "bilateral_hand_speed",
+        "supine_elbow_flexion",
+        "supine_hand_speed",
     ]
 
     for name in metric_names:
         values = [getattr(m, name) for m in metrics_list]
-        summary[name] = float(np.mean(values)) if values else 0.0
+        nonzero_values = [v for v in values if v != 0.0]
+        summary[name] = float(np.mean(nonzero_values)) if nonzero_values else 0.0
 
     summary["num_cycles"] = float(len(metrics_list))
+    # Include detected stroke type for downstream use
+    if metrics_list:
+        summary["stroke_type"] = metrics_list[0].stroke_type
     return summary
+
+
+def _compute_bilateral_elbow(
+    keypoints: np.ndarray,
+    left_start: int, right_start: int,
+    left_end: int, right_end: int,
+) -> float:
+    """Compute bilateral (both arms) mean elbow flexion for butterfly."""
+
+    left_angle = _compute_mean_elbow_angle(keypoints, left_start, left_end, side="left") if left_end > left_start else 0.0
+    right_angle = _compute_mean_elbow_angle(keypoints, right_start, right_end, side="right") if right_end > right_start else 0.0
+    if left_angle > 0 or right_angle > 0:
+        return (left_angle + right_angle) / 2.0
+    return 0.0
+
+
+def _compute_bilateral_speed(
+    keypoints: np.ndarray,
+    left_start: int, right_start: int,
+    left_end: int, right_end: int,
+) -> float:
+    """Compute bilateral mean hand speed for butterfly."""
+
+    left_speed = _compute_hand_speed(keypoints, left_start, left_end, side="left") if left_end > left_start + 1 else 0.0
+    right_speed = _compute_hand_speed(keypoints, right_start, right_end, side="right") if right_end > right_start + 1 else 0.0
+    if left_speed > 0 or right_speed > 0:
+        return (left_speed + right_speed) / 2.0
+    return 0.0
+
+
+def _compute_supine_elbow(
+    keypoints: np.ndarray,
+    left_start: int, right_start: int,
+    left_end: int, right_end: int,
+) -> float:
+    """Compute supine (backstroke) elbow flexion — best arm value."""
+
+    left_angle = _compute_mean_elbow_angle(keypoints, left_start, left_end, side="left") if left_end > left_start else 0.0
+    right_angle = _compute_mean_elbow_angle(keypoints, right_start, right_end, side="right") if right_end > right_start else 0.0
+    return max(left_angle, right_angle)
+
+
+def _compute_supine_speed(
+    keypoints: np.ndarray,
+    left_start: int, right_start: int,
+    left_end: int, right_end: int,
+) -> float:
+    """Compute supine (backstroke) hand speed — best arm value."""
+
+    left_speed = _compute_hand_speed(keypoints, left_start, left_end, side="left") if left_end > left_start + 1 else 0.0
+    right_speed = _compute_hand_speed(keypoints, right_start, right_end, side="right") if right_end > right_start + 1 else 0.0
+    return max(left_speed, right_speed)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -352,6 +424,7 @@ def main() -> int:
     cycles = [
         StrokeCycle(
             cycle_index=c.get("cycle_index", 0),
+            stroke_type=c.get("stroke_type", "freestyle"),
             left_entry_frame=c.get("left_entry_frame", 0),
             left_catch_frame=c.get("left_catch_frame", 0),
             left_pull_end_frame=c.get("left_pull_end_frame", 0),

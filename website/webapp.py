@@ -279,6 +279,12 @@ def job_detail(job_id: str) -> Any:
     return _serve_frontend()
 
 
+@app.get("/trends")
+def trends_page() -> Any:
+    """Serve the trends dashboard SPA page."""
+    return _serve_frontend()
+
+
 def _download_artifact(job_id: str, artifact_name: str) -> Any:
     job = _get_job_or_404(job_id)
     artifact_path = job.outputs.get(artifact_name)
