@@ -15,8 +15,10 @@ import {
   BarChart3,
   Printer,
   AlertTriangle,
+  Copy,
+  Check,
 } from "lucide-react";
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useCallback } from "react";
 import { Link } from "react-router-dom";
 
 import { fetchTrends, compareSwimmers } from "@/api";
@@ -33,11 +35,13 @@ const METRIC_CONFIG = {
   right_elbow_flexion: { label: "R Elbow Flexion", unit: "°", icon: Activity, color: "#fb923c" },
 };
 
-function Sparkline({ values, color, metric, height = 40, width = 120 }) {
-  const { points, pathLength, gradientId, safeColor, h, padding } = useMemo(() => {
-    if (!values || values.length < 2) return { points: "", pathLength: 0 };
+function Sparkline({ values, dates, color, metric, height = 40, width = 120, unit }) {
+  const [hoverIdx, setHoverIdx] = useState(null);
+
+  const { points, dotCoords, pathLength, gradientId, safeColor, h, padding, label } = useMemo(() => {
+    if (!values || values.length < 2) return { points: "", pathLength: 0, dotCoords: [] };
     const vals = values.filter(v => v != null);
-    if (vals.length < 2) return { points: "", pathLength: 0 };
+    if (vals.length < 2) return { points: "", pathLength: 0, dotCoords: [] };
 
     const c = color || "#60a5fa";
     const gId = `spark-fill-${metric || "default"}-${c.replace("#", "")}`;
@@ -48,55 +52,96 @@ function Sparkline({ values, color, metric, height = 40, width = 120 }) {
     const w = width - p * 2;
     const hgt = height - p * 2;
 
-    const pts = vals.map((v, i) => {
+    const dots = vals.map((v, i) => {
       const x = p + (i / (vals.length - 1)) * w;
       const y = p + hgt - ((v - min) / range) * hgt;
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
-    }).join(" ");
+      return { x, y, v, idx: i };
+    });
+
+    const pts = dots.map(d => `${d.x.toFixed(1)},${d.y.toFixed(1)}`).join(" ");
 
     let len = 0;
-    for (let i = 1; i < vals.length; i++) {
-      const x1 = p + ((i - 1) / (vals.length - 1)) * w;
-      const y1 = p + hgt - ((vals[i - 1] - min) / range) * hgt;
-      const x2 = p + (i / (vals.length - 1)) * w;
-      const y2 = p + hgt - ((vals[i] - min) / range) * hgt;
-      len += Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
+    for (let i = 1; i < dots.length; i++) {
+      len += Math.sqrt((dots[i].x - dots[i-1].x) ** 2 + (dots[i].y - dots[i-1].y) ** 2);
     }
 
-    return { points: pts, pathLength: len, gradientId: gId, safeColor: c, h: hgt, padding: p };
+    return { points: pts, dotCoords: dots, pathLength: len, gradientId: gId, safeColor: c, h: hgt, padding: p };
   }, [values, color, metric, width, height]);
 
   if (!points || !pathLength) return null;
 
   return (
-    <svg width={width} height={height} className="shrink-0">
-      <defs>
-        <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={safeColor} stopOpacity="0.25" />
-          <stop offset="100%" stopColor={safeColor} stopOpacity="0.02" />
-        </linearGradient>
-      </defs>
-      <polygon
-        points={`${padding},${h + padding} ${points} ${width - padding},${h + padding}`}
-        fill={`url(#${gradientId})`}
-        className="spark-fill-appear"
-      />
-      <polyline
-        points={points}
-        fill="none"
-        stroke={safeColor}
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeDasharray={pathLength}
-        strokeDashoffset={pathLength}
-        className="spark-line-animate"
-      />
-    </svg>
+    <div className="relative shrink-0" style={{ width, height }}>
+      <svg width={width} height={height} style={{ overflow: "visible" }}
+        onMouseLeave={() => setHoverIdx(null)}>
+        <defs>
+          <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={safeColor} stopOpacity="0.25" />
+            <stop offset="100%" stopColor={safeColor} stopOpacity="0.02" />
+          </linearGradient>
+        </defs>
+        <polygon
+          points={`${padding},${h + padding} ${points} ${width - padding},${h + padding}`}
+          fill={`url(#${gradientId})`}
+          className="spark-fill-appear"
+        />
+        <polyline
+          points={points}
+          fill="none"
+          stroke={safeColor}
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeDasharray={pathLength}
+          strokeDashoffset={pathLength}
+          className="spark-line-animate"
+        />
+        {/* Hover targets */}
+        {dotCoords.map((d) => (
+          <circle
+            key={d.idx}
+            cx={d.x}
+            cy={d.y}
+            r={6}
+            fill="transparent"
+            stroke="transparent"
+            style={{ cursor: "pointer" }}
+            onMouseEnter={() => setHoverIdx(d.idx)}
+            onClick={() => setHoverIdx(d.idx === hoverIdx ? null : d.idx)}
+          />
+        ))}
+        {/* Active dot indicator */}
+        {hoverIdx != null && dotCoords[hoverIdx] && (
+          <circle
+            cx={dotCoords[hoverIdx].x}
+            cy={dotCoords[hoverIdx].y}
+            r={3}
+            fill={safeColor}
+            stroke="#fff"
+            strokeWidth="1"
+          />
+        )}
+      </svg>
+      {/* Tooltip */}
+      {hoverIdx != null && dotCoords[hoverIdx] && (
+        <div
+          className="absolute z-20 rounded-lg border border-white/10 bg-gray-900/95 backdrop-blur px-2 py-1 text-[10px] text-white shadow-lg pointer-events-none whitespace-nowrap"
+          style={{
+            left: Math.min(dotCoords[hoverIdx].x, width - 80),
+            top: Math.max(0, dotCoords[hoverIdx].y - 32),
+          }}
+        >
+          <p className="font-medium">{dotCoords[hoverIdx].v.toFixed(1)} {unit || ""}</p>
+          {dates && dates[hoverIdx] && (
+            <p className="text-white/50">{dates[hoverIdx]}</p>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
-function TrendBar({ value, maxValue, color, label, sparkValues, sparkMetric }) {
+function TrendBar({ value, maxValue, color, label, sparkValues, sparkMetric, sparkDates, unit }) {
   const pct = maxValue > 0 ? Math.min((value / maxValue) * 100, 100) : 0;
   return (
     <div className="flex items-center gap-2">
@@ -107,7 +152,7 @@ function TrendBar({ value, maxValue, color, label, sparkValues, sparkMetric }) {
           style={{ width: `${pct}%`, backgroundColor: color }}
         />
       </div>
-      <Sparkline values={sparkValues} color={color} metric={sparkMetric} />
+      <Sparkline values={sparkValues} dates={sparkDates} color={color} metric={sparkMetric} unit={unit} />
       <span className="w-14 text-xs text-white/70 text-right">{value.toFixed(1)}</span>
     </div>
   );
@@ -181,6 +226,8 @@ export function TrendsPage() {
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [aggregation, setAggregation] = useState("");
+  const [outlierMethod, setOutlierMethod] = useState("2sigma");
+  const [copied, setCopied] = useState(false);
 
   const [compareMode, setCompareMode] = useState(false);
   const [swimmerA, setSwimmerA] = useState("");
@@ -188,8 +235,6 @@ export function TrendsPage() {
   const [comparison, setComparison] = useState(null);
   const [compareLoading, setCompareLoading] = useState(false);
   const [compareError, setCompareError] = useState("");
-
-  const contentRef = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -268,6 +313,55 @@ export function TrendsPage() {
     window.print();
   }
 
+  const handleCopyReport = useCallback(async () => {
+    if (!summary) return;
+    const cfg = METRIC_CONFIG[primaryMetric] || { label: primaryMetric, unit: "" };
+    const lines = [
+      "SwimVision — Performance Trends Report",
+      "========================================",
+      "",
+      `Primary Metric: ${cfg.label} (${cfg.unit})`,
+      `Sessions: ${summary.num_sessions}`,
+      `Date Range: ${summary.date_range?.first || "—"} — ${summary.date_range?.last || "—"}`,
+      `Overall Severity: ${summary.overall_worst_severity}`,
+      `Metrics with Trends: ${summary.metrics_with_trends}`,
+      `Outliers (${outlierMethod === "2sigma" ? "2σ" : "IQR"}): ${outlierInfo.count}`,
+      "",
+      "Primary Trend:",
+      `  Mean: ${summary.primary_trend?.mean?.toFixed(1) || "—"}`,
+      `  Range: ${summary.primary_trend?.min?.toFixed(1) || "—"} – ${summary.primary_trend?.max?.toFixed(1) || "—"}`,
+      `  Direction: ${summary.primary_trend?.direction || "—"}`,
+      `  Slope: ${summary.primary_trend?.slope?.toFixed(3) || "—"}`,
+      "",
+      summary.summary_verdict || "",
+      "",
+      "Metric Breakdown:",
+    ];
+    Object.entries(metricTrends).forEach(([metric, trend]) => {
+      const mCfg = METRIC_CONFIG[metric] || { label: metric, unit: "" };
+      lines.push(`  ${mCfg.label}: mean=${trend.mean?.toFixed(1) || "—"} ${mCfg.unit}`);
+    });
+    lines.push("", `Generated: ${new Date().toISOString().slice(0, 10)}`);
+
+    try {
+      await navigator.clipboard.writeText(lines.join("\n"));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Fallback for older browsers / non-HTTPS contexts
+      const textarea = document.createElement("textarea");
+      textarea.value = lines.join("\n");
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      try { document.execCommand("copy"); } catch { /* silent */ }
+      document.body.removeChild(textarea);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  }, [summary, primaryMetric, metricTrends, outlierInfo, outlierMethod]);
+
   const summary = trends?.trend_summary;
   const sessions = trends?.sessions || [];
   const metricTrends = trends?.metric_trends || {};
@@ -282,16 +376,36 @@ export function TrendsPage() {
     return data;
   }, [sessions, metricTrends]);
 
-  // Compute 2σ outlier detection for primary metric
+  // Dates for sparkline tooltips
+  const sparklineDates = useMemo(() => {
+    return sessions.map((s) => s.date || "");
+  }, [sessions]);
+
+  // Outlier detection — both 2σ and IQR methods
   const outlierInfo = useMemo(() => {
     const vals = sessions.map((s) => s.metrics?.[primaryMetric]).filter((v) => v != null);
-    if (vals.length < 3) return { outlierIds: new Set(), count: 0, bounds: null };
+    if (vals.length < 3) {
+      return { outlierIds: new Set(), count: 0, bounds: null, method: outlierMethod };
+    }
 
+    let lower, upper;
+    const sorted = [...vals].sort((a, b) => a - b);
     const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
-    const variance = vals.reduce((sum, v) => sum + (v - mean) ** 2, 0) / vals.length;
-    const std = Math.sqrt(variance);
-    const lower = mean - 2 * std;
-    const upper = mean + 2 * std;
+
+    if (outlierMethod === "iqr") {
+      const q1Idx = Math.floor(sorted.length * 0.25);
+      const q3Idx = Math.floor(sorted.length * 0.75);
+      const q1 = sorted[q1Idx];
+      const q3 = sorted[q3Idx];
+      const iqr = q3 - q1;
+      lower = q1 - 1.5 * iqr;
+      upper = q3 + 1.5 * iqr;
+    } else {
+      const variance = vals.reduce((sum, v) => sum + (v - mean) ** 2, 0) / vals.length;
+      const std = Math.sqrt(variance);
+      lower = mean - 2 * std;
+      upper = mean + 2 * std;
+    }
 
     const outlierIds = new Set();
     sessions.forEach((s, idx) => {
@@ -301,8 +415,13 @@ export function TrendsPage() {
       }
     });
 
-    return { outlierIds, count: outlierIds.size, bounds: { lower, upper, mean, std } };
-  }, [sessions, primaryMetric]);
+    return {
+      outlierIds,
+      count: outlierIds.size,
+      bounds: { lower, upper, mean },
+      method: outlierMethod,
+    };
+  }, [sessions, primaryMetric, outlierMethod]);
 
   return (
     <div className="min-h-screen pb-24">
@@ -335,9 +454,9 @@ export function TrendsPage() {
           .print-area .text-white\\/70 { color: #555 !important; }
           .print-area .text-white { color: #000 !important; }
           .print-area .bg-white\\/10,
-          .print-area .bg-white\\/\\[0\\.03\\],
-          .print-area .bg-white\\/\\[0\\.04\\],
-          .print-area .bg-white\\/\\[0\\.05\\] { background: #f5f5f5 !important; }
+          .print-area .bg-white\\/[0\\.03\\],
+          .print-area .bg-white\\/[0\\.04\\],
+          .print-area .bg-white\\/[0\\.05\\] { background: #f5f5f5 !important; }
           .print-area .border-white\\/10,
           .print-area .border-white\\/20 { border-color: #ddd !important; }
           .print-area .bg-black\\/35 { background: transparent !important; }
@@ -445,6 +564,19 @@ export function TrendsPage() {
             >
               <Printer className="h-3.5 w-3.5" />
               PDF
+            </button>
+
+            <button
+              onClick={handleCopyReport}
+              disabled={!summary}
+              className={`inline-flex items-center gap-1.5 text-xs rounded-full px-3 py-1 transition border disabled:opacity-30 ${
+                copied
+                  ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
+                  : "text-white/50 hover:text-white border-white/10 hover:border-white/20"
+              }`}
+            >
+              {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+              {copied ? "Copied!" : "Share"}
             </button>
 
             <button
@@ -636,7 +768,17 @@ export function TrendsPage() {
               </Card>
               <Card className={outlierInfo.count > 0 ? "border-amber-500/30" : ""}>
                 <CardContent className="p-5">
-                  <p className="text-xs text-white/40 uppercase tracking-wider">Outliers (2σ)</p>
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-white/40 uppercase tracking-wider">Outliers</p>
+                    <select
+                      value={outlierMethod}
+                      onChange={(e) => setOutlierMethod(e.target.value)}
+                      className="bg-transparent text-[10px] text-white/40 border border-white/10 rounded px-1 py-0"
+                    >
+                      <option value="2sigma" className="bg-gray-900">2σ</option>
+                      <option value="iqr" className="bg-gray-900">IQR</option>
+                    </select>
+                  </div>
                   <div className="flex items-center gap-2 mt-1">
                     <p className="text-2xl font-semibold text-white">{outlierInfo.count}</p>
                     {outlierInfo.count > 0 && (
@@ -645,7 +787,7 @@ export function TrendsPage() {
                   </div>
                   {outlierInfo.bounds && (
                     <p className="text-[10px] text-white/30 mt-1">
-                      μ={outlierInfo.bounds.mean.toFixed(1)} σ={outlierInfo.bounds.std.toFixed(2)}
+                      μ={outlierInfo.bounds.mean.toFixed(1)} bounds=[{outlierInfo.bounds.lower.toFixed(1)}, {outlierInfo.bounds.upper.toFixed(1)}]
                     </p>
                   )}
                 </CardContent>
@@ -682,7 +824,15 @@ export function TrendsPage() {
                       <h2 className="text-lg font-semibold text-white">
                         {METRIC_CONFIG[primaryMetric]?.label || primaryMetric}
                       </h2>
-                      <Sparkline values={sparklineData[primaryMetric]} color={METRIC_CONFIG[primaryMetric]?.color || "#60a5fa"} metric={primaryMetric} width={160} height={48} />
+                      <Sparkline
+                        values={sparklineData[primaryMetric]}
+                        dates={sparklineDates}
+                        color={METRIC_CONFIG[primaryMetric]?.color || "#60a5fa"}
+                        metric={primaryMetric}
+                        width={160}
+                        height={48}
+                        unit={METRIC_CONFIG[primaryMetric]?.unit || ""}
+                      />
                     </div>
                     <TrendDirection
                       direction={summary.primary_trend.direction}
@@ -733,7 +883,9 @@ export function TrendsPage() {
                         color={cfg.color}
                         label={`${cfg.label} (${cfg.unit})`}
                         sparkValues={sparklineData[metric]}
+                        sparkDates={sparklineDates}
                         sparkMetric={metric}
+                        unit={cfg.unit}
                       />
                     );
                   })}
@@ -762,6 +914,15 @@ export function TrendsPage() {
                         >
                           <Printer className="h-3.5 w-3.5" />
                           Print
+                        </button>
+                        <button
+                          onClick={handleCopyReport}
+                          className={`inline-flex items-center gap-1.5 text-xs transition ${
+                            copied ? "text-emerald-400" : "text-white/50 hover:text-white"
+                          }`}
+                        >
+                          {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                          {copied ? "Copied!" : "Share"}
                         </button>
                       </>
                     )}
@@ -814,7 +975,7 @@ export function TrendsPage() {
                               {isOutlier && (
                                 <Badge className="bg-amber-500/15 text-amber-400 border-amber-500/30 gap-1 ml-2">
                                   <AlertTriangle className="h-3 w-3" />
-                                  2σ outlier
+                                  {outlierMethod === "2sigma" ? "2σ" : "IQR"} outlier
                                 </Badge>
                               )}
                             </td>
@@ -826,7 +987,7 @@ export function TrendsPage() {
                 </div>
                 {outlierInfo.count > 0 && (
                   <p className="mt-3 text-xs text-amber-400/60">
-                    {outlierInfo.count} session{outlierInfo.count !== 1 ? "s" : ""} flagged as 2σ outliers on {METRIC_CONFIG[primaryMetric]?.label || primaryMetric}
+                    {outlierInfo.count} session{outlierInfo.count !== 1 ? "s" : ""} flagged as {outlierMethod === "2sigma" ? "2σ" : "IQR"} outliers on {METRIC_CONFIG[primaryMetric]?.label || primaryMetric}
                   </p>
                 )}
               </CardContent>
