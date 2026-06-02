@@ -17,6 +17,8 @@ import {
   AlertTriangle,
   Copy,
   Check,
+  Sun,
+  Moon,
 } from "lucide-react";
 import { useEffect, useState, useMemo, useCallback } from "react";
 import { Link } from "react-router-dom";
@@ -35,10 +37,10 @@ const METRIC_CONFIG = {
   right_elbow_flexion: { label: "R Elbow Flexion", unit: "°", icon: Activity, color: "#fb923c" },
 };
 
-function Sparkline({ values, dates, color, metric, height = 40, width = 120, unit }) {
+function Sparkline({ values, dates, color, metric, height = 40, width = 120, unit, goalValue }) {
   const [hoverIdx, setHoverIdx] = useState(null);
 
-  const { points, dotCoords, pathLength, gradientId, safeColor, h, padding, label } = useMemo(() => {
+  const { points, dotCoords, pathLength, gradientId, safeColor, h, padding, goalY } = useMemo(() => {
     if (!values || values.length < 2) return { points: "", pathLength: 0, dotCoords: [] };
     const vals = values.filter(v => v != null);
     if (vals.length < 2) return { points: "", pathLength: 0, dotCoords: [] };
@@ -65,21 +67,73 @@ function Sparkline({ values, dates, color, metric, height = 40, width = 120, uni
       len += Math.sqrt((dots[i].x - dots[i-1].x) ** 2 + (dots[i].y - dots[i-1].y) ** 2);
     }
 
-    return { points: pts, dotCoords: dots, pathLength: len, gradientId: gId, safeColor: c, h: hgt, padding: p };
-  }, [values, color, metric, width, height]);
+    let gY = null;
+    if (goalValue != null && !isNaN(goalValue)) {
+      gY = p + hgt - ((goalValue - min) / range) * hgt;
+    }
+
+    return { points: pts, dotCoords: dots, pathLength: len, gradientId: gId, safeColor: c, h: hgt, padding: p, goalY: gY };
+  }, [values, color, metric, width, height, goalValue]);
+
+  const handleKeyDown = useCallback((e) => {
+    if (!dotCoords.length) return;
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      e.preventDefault();
+      setHoverIdx(prev => {
+        if (prev == null) return e.key === "ArrowLeft" ? dotCoords.length - 1 : 0;
+        const next = e.key === "ArrowLeft" ? prev - 1 : prev + 1;
+        if (next < 0) return dotCoords.length - 1;
+        if (next >= dotCoords.length) return 0;
+        return next;
+      });
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      setHoverIdx(prev => (prev != null ? null : 0));
+    } else if (e.key === "Escape") {
+      setHoverIdx(null);
+    }
+  }, [dotCoords.length]);
 
   if (!points || !pathLength) return null;
 
   return (
-    <div className="relative shrink-0" style={{ width, height }}>
-      <svg width={width} height={height} style={{ overflow: "visible" }}
-        onMouseLeave={() => setHoverIdx(null)}>
+    <div
+      className="relative shrink-0 outline-none focus-visible:ring-2 focus-visible:ring-white/40 focus-visible:rounded"
+      style={{ width, height }}
+      tabIndex={0}
+      onKeyDown={handleKeyDown}
+      onMouseLeave={() => setHoverIdx(null)}
+      aria-label={`Sparkline for ${metric || "metric"}`}
+    >
+      <svg width={width} height={height} style={{ overflow: "visible" }}>
         <defs>
           <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor={safeColor} stopOpacity="0.25" />
             <stop offset="100%" stopColor={safeColor} stopOpacity="0.02" />
           </linearGradient>
         </defs>
+        {/* Goal line */}
+        {goalY != null && (
+          <>
+            <line
+              x1={0} y1={goalY} x2={width} y2={goalY}
+              stroke={safeColor}
+              strokeWidth="1"
+              strokeDasharray="4 3"
+              opacity="0.5"
+            />
+            <text
+              x={width - 2}
+              y={goalY - 3}
+              textAnchor="end"
+              fill={safeColor}
+              fontSize="8"
+              opacity="0.7"
+            >
+              {goalValue.toFixed(1)}
+            </text>
+          </>
+        )}
         <polygon
           points={`${padding},${h + padding} ${points} ${width - padding},${h + padding}`}
           fill={`url(#${gradientId})`}
@@ -141,7 +195,7 @@ function Sparkline({ values, dates, color, metric, height = 40, width = 120, uni
   );
 }
 
-function TrendBar({ value, maxValue, color, label, sparkValues, sparkMetric, sparkDates, unit }) {
+function TrendBar({ value, maxValue, color, label, sparkValues, sparkMetric, sparkDates, unit, goalValue }) {
   const pct = maxValue > 0 ? Math.min((value / maxValue) * 100, 100) : 0;
   return (
     <div className="flex items-center gap-2">
@@ -152,7 +206,7 @@ function TrendBar({ value, maxValue, color, label, sparkValues, sparkMetric, spa
           style={{ width: `${pct}%`, backgroundColor: color }}
         />
       </div>
-      <Sparkline values={sparkValues} dates={sparkDates} color={color} metric={sparkMetric} unit={unit} />
+      <Sparkline values={sparkValues} dates={sparkDates} color={color} metric={sparkMetric} unit={unit} goalValue={goalValue} />
       <span className="w-14 text-xs text-white/70 text-right">{value.toFixed(1)}</span>
     </div>
   );
@@ -228,6 +282,17 @@ export function TrendsPage() {
   const [aggregation, setAggregation] = useState("");
   const [outlierMethod, setOutlierMethod] = useState("2sigma");
   const [copied, setCopied] = useState(false);
+  const [goalValue, setGoalValue] = useState("");
+
+  // Dark/light mode
+  const [theme, setTheme] = useState(() => {
+    return typeof window !== "undefined" ? localStorage.getItem("swimvision-theme") || "dark" : "dark";
+  });
+
+  useEffect(() => {
+    localStorage.setItem("swimvision-theme", theme);
+    document.documentElement.setAttribute("data-theme", theme);
+  }, [theme]);
 
   const [compareMode, setCompareMode] = useState(false);
   const [swimmerA, setSwimmerA] = useState("");
@@ -348,7 +413,6 @@ export function TrendsPage() {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      // Fallback for older browsers / non-HTTPS contexts
       const textarea = document.createElement("textarea");
       textarea.value = lines.join("\n");
       textarea.style.position = "fixed";
@@ -376,12 +440,16 @@ export function TrendsPage() {
     return data;
   }, [sessions, metricTrends]);
 
-  // Dates for sparkline tooltips
   const sparklineDates = useMemo(() => {
     return sessions.map((s) => s.date || "");
   }, [sessions]);
 
-  // Outlier detection — both 2σ and IQR methods
+  // Parse goal value
+  const parsedGoal = useMemo(() => {
+    const v = parseFloat(goalValue);
+    return isNaN(v) ? null : v;
+  }, [goalValue]);
+
   const outlierInfo = useMemo(() => {
     const vals = sessions.map((s) => s.metrics?.[primaryMetric]).filter((v) => v != null);
     if (vals.length < 3) {
@@ -440,6 +508,74 @@ export function TrendsPage() {
           animation: spark-fill-in 0.6s ease-out 0.3s forwards;
           opacity: 0;
         }
+        /* Dark theme (default) */
+        :root, [data-theme="dark"] {
+          --bg-color: #0a0a0a;
+          --card-bg: rgba(255,255,255,0.03);
+          --text-primary: #ffffff;
+          --text-secondary: rgba(255,255,255,0.7);
+          --text-muted: rgba(255,255,255,0.5);
+          --border-color: rgba(255,255,255,0.1);
+          --border-light: rgba(255,255,255,0.05);
+        }
+        [data-theme="light"] {
+          --bg-color: #f8f9fa;
+          --card-bg: #ffffff;
+          --text-primary: #1a1a2e;
+          --text-secondary: #4a4a6a;
+          --text-muted: #6b7280;
+          --border-color: #e5e7eb;
+          --border-light: #f0f0f0;
+        }
+        body {
+          background-color: var(--bg-color);
+          color: var(--text-primary);
+          transition: background-color 0.3s, color 0.3s;
+        }
+        .theme-card {
+          background-color: var(--card-bg);
+          border-color: var(--border-color);
+        }
+        .theme-text-primary { color: var(--text-primary); }
+        .theme-text-secondary { color: var(--text-secondary); }
+        .theme-text-muted { color: var(--text-muted); }
+        .theme-border { border-color: var(--border-color); }
+        [data-theme="light"] .glass-line {
+          background: rgba(255,255,255,0.8) !important;
+          border-color: #e5e7eb !important;
+        }
+        [data-theme="light"] .backdrop-blur-xl {
+          backdrop-filter: blur(12px);
+        }
+        [data-theme="light"] .hero-veil {
+          opacity: 0.15 !important;
+        }
+        [data-theme="light"] .bg-white\\/10,
+        [data-theme="light"] .bg-white\\/\\[0\\.03\\],
+        [data-theme="light"] .bg-white\\/\\[0\\.04\\],
+        [data-theme="light"] .bg-white\\/\\[0\\.05\\],
+        [data-theme="light"] .bg-white\\/\\[0\\.06\\] {
+          background: #f0f0f0 !important;
+        }
+        [data-theme="light"] .border-white\\/10,
+        [data-theme="light"] .border-white\\/20,
+        [data-theme="light"] .border-white\\/30 {
+          border-color: #e5e7eb !important;
+        }
+        [data-theme="light"] .text-white { color: #1a1a2e !important; }
+        [data-theme="light"] .text-white\\/40,
+        [data-theme="light"] .text-white\\/50,
+        [data-theme="light"] .text-white\\/55,
+        [data-theme="light"] .text-white\\/58,
+        [data-theme="light"] .text-white\\/60,
+        [data-theme="light"] .text-white\\/72,
+        [data-theme="light"] .text-white\\/70,
+        [data-theme="light"] .text-white\\/80 { color: #4a4a6a !important; }
+        [data-theme="light"] .bg-black\\/35 { background: rgba(255,255,255,0.8) !important; }
+        [data-theme="light"] select option { background: #fff; color: #1a1a2e; }
+        [data-theme="light"] input[type="date"] { color-scheme: light; }
+        [data-theme="light"] input { color: #1a1a2e; }
+        [data-theme="light"] ::placeholder { color: #9ca3af; }
         @media print {
           body * { visibility: hidden; }
           .print-area, .print-area * { visibility: visible; }
@@ -547,6 +683,26 @@ export function TrendsPage() {
               </button>
             )}
 
+            {/* Goal value input */}
+            <span className="w-px h-5 bg-white/10 mx-1" />
+            <label className="text-xs text-white/50">Goal:</label>
+            <input
+              type="number"
+              step="any"
+              value={goalValue}
+              onChange={(e) => setGoalValue(e.target.value)}
+              placeholder={METRIC_CONFIG[primaryMetric]?.unit || ""}
+              className="bg-transparent text-white text-sm border border-white/20 rounded px-2 py-1 w-[80px] placeholder:text-white/20"
+            />
+            {goalValue && (
+              <button
+                onClick={() => setGoalValue("")}
+                className="text-xs text-white/40 hover:text-white/70 transition"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            )}
+
             <span className="w-px h-5 bg-white/10 mx-1" />
             <button
               onClick={handleExportCSV}
@@ -589,6 +745,17 @@ export function TrendsPage() {
             >
               <GitCompare className="h-3.5 w-3.5" />
               Compare
+            </button>
+
+            {/* Theme toggle */}
+            <span className="w-px h-5 bg-white/10 mx-1" />
+            <button
+              onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+              className="inline-flex items-center gap-1.5 text-xs rounded-full px-3 py-1 transition text-white/50 hover:text-white border border-white/10 hover:border-white/20"
+              title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+            >
+              {theme === "dark" ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
+              {theme === "dark" ? "Light" : "Dark"}
             </button>
 
             {(swimmerId || analysisMode || startDate || endDate || aggregation) && (
@@ -832,6 +999,7 @@ export function TrendsPage() {
                         width={160}
                         height={48}
                         unit={METRIC_CONFIG[primaryMetric]?.unit || ""}
+                        goalValue={parsedGoal}
                       />
                     </div>
                     <TrendDirection
@@ -886,6 +1054,7 @@ export function TrendsPage() {
                         sparkDates={sparklineDates}
                         sparkMetric={metric}
                         unit={cfg.unit}
+                        goalValue={metric === primaryMetric ? parsedGoal : null}
                       />
                     );
                   })}
