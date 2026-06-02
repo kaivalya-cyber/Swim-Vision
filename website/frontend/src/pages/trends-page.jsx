@@ -13,6 +13,8 @@ import {
   X,
   Download,
   BarChart3,
+  Printer,
+  AlertTriangle,
 } from "lucide-react";
 import { useEffect, useState, useMemo } from "react";
 import { Link } from "react-router-dom";
@@ -32,24 +34,39 @@ const METRIC_CONFIG = {
 };
 
 function Sparkline({ values, color, metric, height = 40, width = 120 }) {
-  if (!values || values.length < 2) return null;
-  const vals = values.filter(v => v != null);
-  if (vals.length < 2) return null;
+  const { points, pathLength, gradientId, safeColor, h, padding } = useMemo(() => {
+    if (!values || values.length < 2) return { points: "", pathLength: 0 };
+    const vals = values.filter(v => v != null);
+    if (vals.length < 2) return { points: "", pathLength: 0 };
 
-  const safeColor = color || "#60a5fa";
-  const gradientId = `spark-fill-${metric || "default"}-${safeColor.replace("#", "")}`;
-  const min = Math.min(...vals);
-  const max = Math.max(...vals);
-  const range = max - min || 1;
-  const padding = 2;
-  const w = width - padding * 2;
-  const h = height - padding * 2;
+    const c = color || "#60a5fa";
+    const gId = `spark-fill-${metric || "default"}-${c.replace("#", "")}`;
+    const min = Math.min(...vals);
+    const max = Math.max(...vals);
+    const range = max - min || 1;
+    const p = 2;
+    const w = width - p * 2;
+    const hgt = height - p * 2;
 
-  const points = vals.map((v, i) => {
-    const x = padding + (i / (vals.length - 1)) * w;
-    const y = padding + h - ((v - min) / range) * h;
-    return `${x},${y}`;
-  }).join(" ");
+    const pts = vals.map((v, i) => {
+      const x = p + (i / (vals.length - 1)) * w;
+      const y = p + hgt - ((v - min) / range) * hgt;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(" ");
+
+    let len = 0;
+    for (let i = 1; i < vals.length; i++) {
+      const x1 = p + ((i - 1) / (vals.length - 1)) * w;
+      const y1 = p + hgt - ((vals[i - 1] - min) / range) * hgt;
+      const x2 = p + (i / (vals.length - 1)) * w;
+      const y2 = p + hgt - ((vals[i] - min) / range) * hgt;
+      len += Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
+    }
+
+    return { points: pts, pathLength: len, gradientId: gId, safeColor: c, h: hgt, padding: p };
+  }, [values, color, metric, width, height]);
+
+  if (!points || !pathLength) return null;
 
   return (
     <svg width={width} height={height} className="shrink-0">
@@ -62,6 +79,7 @@ function Sparkline({ values, color, metric, height = 40, width = 120 }) {
       <polygon
         points={`${padding},${h + padding} ${points} ${width - padding},${h + padding}`}
         fill={`url(#${gradientId})`}
+        className="spark-fill-appear"
       />
       <polyline
         points={points}
@@ -70,6 +88,9 @@ function Sparkline({ values, color, metric, height = 40, width = 120 }) {
         strokeWidth="1.5"
         strokeLinecap="round"
         strokeLinejoin="round"
+        strokeDasharray={pathLength}
+        strokeDashoffset={pathLength}
+        className="spark-line-animate"
       />
     </svg>
   );
@@ -161,13 +182,14 @@ export function TrendsPage() {
   const [endDate, setEndDate] = useState("");
   const [aggregation, setAggregation] = useState("");
 
-  // Comparison mode state
   const [compareMode, setCompareMode] = useState(false);
   const [swimmerA, setSwimmerA] = useState("");
   const [swimmerB, setSwimmerB] = useState("");
   const [comparison, setComparison] = useState(null);
   const [compareLoading, setCompareLoading] = useState(false);
   const [compareError, setCompareError] = useState("");
+
+  const contentRef = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -242,13 +264,16 @@ export function TrendsPage() {
     URL.revokeObjectURL(url);
   }
 
+  function handlePrintPDF() {
+    window.print();
+  }
+
   const summary = trends?.trend_summary;
   const sessions = trends?.sessions || [];
   const metricTrends = trends?.metric_trends || {};
   const availableSwimmers = trends?.available_swimmer_ids || [];
   const availableModes = trends?.available_analysis_modes || [];
 
-  // Build sparkline values per metric from sessions
   const sparklineData = useMemo(() => {
     const data = {};
     Object.keys(metricTrends).forEach((metric) => {
@@ -257,11 +282,76 @@ export function TrendsPage() {
     return data;
   }, [sessions, metricTrends]);
 
+  // Compute 2σ outlier detection for primary metric
+  const outlierInfo = useMemo(() => {
+    const vals = sessions.map((s) => s.metrics?.[primaryMetric]).filter((v) => v != null);
+    if (vals.length < 3) return { outlierIds: new Set(), count: 0, bounds: null };
+
+    const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
+    const variance = vals.reduce((sum, v) => sum + (v - mean) ** 2, 0) / vals.length;
+    const std = Math.sqrt(variance);
+    const lower = mean - 2 * std;
+    const upper = mean + 2 * std;
+
+    const outlierIds = new Set();
+    sessions.forEach((s, idx) => {
+      const v = s.metrics?.[primaryMetric];
+      if (v != null && (v < lower || v > upper)) {
+        outlierIds.add(s.session_id || idx);
+      }
+    });
+
+    return { outlierIds, count: outlierIds.size, bounds: { lower, upper, mean, std } };
+  }, [sessions, primaryMetric]);
+
   return (
     <div className="min-h-screen pb-24">
-      <SiteHeader />
-      <main className="container pt-12">
-        <Link to="/" className="mb-6 inline-flex items-center gap-2 text-sm text-white/55 transition hover:text-white">
+      <style>{`
+        @keyframes sparkline-draw {
+          to { stroke-dashoffset: 0; }
+        }
+        .spark-line-animate {
+          animation: sparkline-draw 0.8s ease-out forwards;
+        }
+        @keyframes spark-fill-in {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+        .spark-fill-appear {
+          animation: spark-fill-in 0.6s ease-out 0.3s forwards;
+          opacity: 0;
+        }
+        @media print {
+          body * { visibility: hidden; }
+          .print-area, .print-area * { visibility: visible; }
+          .print-area { position: absolute; left: 0; top: 0; width: 100%; }
+          .no-print { display: none !important; }
+          .print-area .container { max-width: 100% !important; padding: 1cm !important; }
+          .print-area table { font-size: 10px !important; }
+          .print-area .text-white\\/40,
+          .print-area .text-white\\/50,
+          .print-area .text-white\\/55,
+          .print-area .text-white\\/60,
+          .print-area .text-white\\/70 { color: #555 !important; }
+          .print-area .text-white { color: #000 !important; }
+          .print-area .bg-white\\/10,
+          .print-area .bg-white\\/\\[0\\.03\\],
+          .print-area .bg-white\\/\\[0\\.04\\],
+          .print-area .bg-white\\/\\[0\\.05\\] { background: #f5f5f5 !important; }
+          .print-area .border-white\\/10,
+          .print-area .border-white\\/20 { border-color: #ddd !important; }
+          .print-area .bg-black\\/35 { background: transparent !important; }
+          .print-area .backdrop-blur-xl { backdrop-filter: none !important; }
+          .print-area svg { max-width: 100%; }
+          .print-area .flex-wrap { flex-wrap: wrap !important; }
+        }
+      `}</style>
+
+      <div className="no-print">
+        <SiteHeader />
+      </div>
+      <main className="container pt-12 print-area">
+        <Link to="/" className="mb-6 inline-flex items-center gap-2 text-sm text-white/55 transition hover:text-white no-print">
           <ArrowLeft className="h-4 w-4" />
           Back to home
         </Link>
@@ -272,7 +362,7 @@ export function TrendsPage() {
         </div>
 
         {/* Filter Bar */}
-        <Card className="mb-6">
+        <Card className="mb-6 no-print">
           <CardContent className="flex flex-wrap items-center gap-3 p-4">
             <User className="h-4 w-4 text-white/50" />
             <label className="text-xs text-white/50">Swimmer:</label>
@@ -300,7 +390,6 @@ export function TrendsPage() {
               ))}
             </select>
 
-            {/* Aggregation toggle */}
             <span className="w-px h-5 bg-white/10 mx-1" />
             <BarChart3 className="h-4 w-4 text-white/50" />
             <label className="text-xs text-white/50">Group:</label>
@@ -314,7 +403,6 @@ export function TrendsPage() {
               <option value="month" className="bg-gray-900">By month</option>
             </select>
 
-            {/* Date range */}
             <span className="w-px h-5 bg-white/10 mx-1" />
             <Calendar className="h-4 w-4 text-white/50" />
             <label className="text-xs text-white/50">From:</label>
@@ -340,7 +428,6 @@ export function TrendsPage() {
               </button>
             )}
 
-            {/* CSV Export */}
             <span className="w-px h-5 bg-white/10 mx-1" />
             <button
               onClick={handleExportCSV}
@@ -351,7 +438,15 @@ export function TrendsPage() {
               CSV
             </button>
 
-            {/* Compare toggle */}
+            <button
+              onClick={handlePrintPDF}
+              disabled={!summary}
+              className="inline-flex items-center gap-1.5 text-xs rounded-full px-3 py-1 transition text-white/50 hover:text-white border border-white/10 hover:border-white/20 disabled:opacity-30"
+            >
+              <Printer className="h-3.5 w-3.5" />
+              PDF
+            </button>
+
             <button
               onClick={() => { setCompareMode(!compareMode); if (compareMode) setComparison(null); }}
               className={`inline-flex items-center gap-1.5 text-xs rounded-full px-3 py-1 transition ${
@@ -374,7 +469,7 @@ export function TrendsPage() {
 
         {/* Comparison Panel */}
         {compareMode && (
-          <Card className="mb-6 border-blue-500/20">
+          <Card className="mb-6 border-blue-500/20 no-print">
             <CardContent className="p-5 space-y-4">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
@@ -520,7 +615,7 @@ export function TrendsPage() {
         {summary && (
           <div className="space-y-6">
             {/* Summary Cards */}
-            <div className="grid gap-4 md:grid-cols-4">
+            <div className="grid gap-4 md:grid-cols-5">
               <Card>
                 <CardContent className="p-5">
                   <p className="text-xs text-white/40 uppercase tracking-wider">Sessions</p>
@@ -537,6 +632,22 @@ export function TrendsPage() {
                 <CardContent className="p-5">
                   <p className="text-xs text-white/40 uppercase tracking-wider">Metrics Tracked</p>
                   <p className="mt-1 text-2xl font-semibold text-white">{summary.metrics_with_trends}</p>
+                </CardContent>
+              </Card>
+              <Card className={outlierInfo.count > 0 ? "border-amber-500/30" : ""}>
+                <CardContent className="p-5">
+                  <p className="text-xs text-white/40 uppercase tracking-wider">Outliers (2σ)</p>
+                  <div className="flex items-center gap-2 mt-1">
+                    <p className="text-2xl font-semibold text-white">{outlierInfo.count}</p>
+                    {outlierInfo.count > 0 && (
+                      <AlertTriangle className="h-4 w-4 text-amber-400" />
+                    )}
+                  </div>
+                  {outlierInfo.bounds && (
+                    <p className="text-[10px] text-white/30 mt-1">
+                      μ={outlierInfo.bounds.mean.toFixed(1)} σ={outlierInfo.bounds.std.toFixed(2)}
+                    </p>
+                  )}
                 </CardContent>
               </Card>
               <Card>
@@ -635,15 +746,26 @@ export function TrendsPage() {
               <CardContent className="p-6">
                 <div className="flex items-center justify-between mb-4">
                   <h2 className="text-lg font-semibold text-white">Session History</h2>
-                  {sessions.length > 0 && (
-                    <button
-                      onClick={handleExportCSV}
-                      className="inline-flex items-center gap-1.5 text-xs text-white/50 hover:text-white transition"
-                    >
-                      <Download className="h-3.5 w-3.5" />
-                      Export CSV
-                    </button>
-                  )}
+                  <div className="flex gap-2 no-print">
+                    {sessions.length > 0 && (
+                      <>
+                        <button
+                          onClick={handleExportCSV}
+                          className="inline-flex items-center gap-1.5 text-xs text-white/50 hover:text-white transition"
+                        >
+                          <Download className="h-3.5 w-3.5" />
+                          CSV
+                        </button>
+                        <button
+                          onClick={handlePrintPDF}
+                          className="inline-flex items-center gap-1.5 text-xs text-white/50 hover:text-white transition"
+                        >
+                          <Printer className="h-3.5 w-3.5" />
+                          Print
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
@@ -654,39 +776,59 @@ export function TrendsPage() {
                         <th className="py-2 text-left font-medium">Mode</th>
                         <th className="py-2 text-left font-medium">Severity</th>
                         <th className="py-2 text-right font-medium">{METRIC_CONFIG[primaryMetric]?.label || primaryMetric}</th>
+                        <th className="py-2 text-left font-medium w-20 no-print"></th>
                       </tr>
                     </thead>
                     <tbody>
-                      {sessions.map((session, idx) => (
-                        <tr key={idx} className="border-b border-white/5 hover:bg-white/[0.02]">
-                          <td className="py-3 text-white/80">{session.session_id}</td>
-                          <td className="py-3 text-white/50">{session.date || "—"}</td>
-                          <td className="py-3">
-                            <span className="text-white/60">{session.analysis_mode}</span>
-                          </td>
-                          <td className="py-3">
-                            <Badge
-                              className={
-                                session.overall_severity === "CRITICAL"
-                                  ? "bg-red-500/15 text-red-400 border-red-500/30"
-                                  : session.overall_severity === "SIGNIFICANT"
-                                  ? "bg-orange-500/15 text-orange-400 border-orange-500/30"
-                                  : session.overall_severity === "MINOR"
-                                  ? "bg-yellow-500/15 text-yellow-400 border-yellow-500/30"
-                                  : "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
-                              }
-                            >
-                              {session.overall_severity}
-                            </Badge>
-                          </td>
-                          <td className="py-3 text-right text-white/70">
-                            {session.metrics?.[primaryMetric]?.toFixed(1) || "—"}
-                          </td>
-                        </tr>
-                      ))}
+                      {sessions.map((session, idx) => {
+                        const isOutlier = outlierInfo.outlierIds.has(session.session_id || idx);
+                        return (
+                          <tr
+                            key={idx}
+                            className={`border-b border-white/5 hover:bg-white/[0.02] ${isOutlier ? "bg-amber-500/[0.04]" : ""}`}
+                          >
+                            <td className="py-3 text-white/80">{session.session_id}</td>
+                            <td className="py-3 text-white/50">{session.date || "—"}</td>
+                            <td className="py-3">
+                              <span className="text-white/60">{session.analysis_mode}</span>
+                            </td>
+                            <td className="py-3">
+                              <Badge
+                                className={
+                                  session.overall_severity === "CRITICAL"
+                                    ? "bg-red-500/15 text-red-400 border-red-500/30"
+                                    : session.overall_severity === "SIGNIFICANT"
+                                    ? "bg-orange-500/15 text-orange-400 border-orange-500/30"
+                                    : session.overall_severity === "MINOR"
+                                    ? "bg-yellow-500/15 text-yellow-400 border-yellow-500/30"
+                                    : "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
+                                }
+                              >
+                                {session.overall_severity}
+                              </Badge>
+                            </td>
+                            <td className={`py-3 text-right ${isOutlier ? "text-amber-400 font-medium" : "text-white/70"}`}>
+                              {session.metrics?.[primaryMetric]?.toFixed(1) || "—"}
+                            </td>
+                            <td className="py-3 no-print">
+                              {isOutlier && (
+                                <Badge className="bg-amber-500/15 text-amber-400 border-amber-500/30 gap-1 ml-2">
+                                  <AlertTriangle className="h-3 w-3" />
+                                  2σ outlier
+                                </Badge>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
+                {outlierInfo.count > 0 && (
+                  <p className="mt-3 text-xs text-amber-400/60">
+                    {outlierInfo.count} session{outlierInfo.count !== 1 ? "s" : ""} flagged as 2σ outliers on {METRIC_CONFIG[primaryMetric]?.label || primaryMetric}
+                  </p>
+                )}
               </CardContent>
             </Card>
           </div>
