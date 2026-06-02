@@ -10,6 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
+import numpy as np
+
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
@@ -37,6 +39,15 @@ FLAG_EXPLANATIONS = {
     "elbow_extension": "Arm extension at entry may be incomplete, reducing streamline quality.",
     "streamline_angle": "Streamline alignment may increase frontal resistance after entry.",
     "elbow_lock_angle": "Elbow position may soften the streamline during underwater travel.",
+    "left_elbow_flexion": "Left elbow catch angle may reduce propulsion efficiency.",
+    "right_elbow_flexion": "Right elbow catch angle may reduce propulsion efficiency.",
+    "left_shoulder_rotation": "Left shoulder rotation may indicate insufficient body roll.",
+    "right_shoulder_rotation": "Right shoulder rotation may indicate insufficient body roll.",
+    "left_hand_speed": "Left hand pull speed may be suboptimal.",
+    "right_hand_speed": "Right hand pull speed may be suboptimal.",
+    "stroke_rate": "Stroke rate may be too low or too high for optimal efficiency.",
+    "body_roll": "Body roll may be insufficient for effective breathing and propulsion.",
+    "symmetry_index": "Left/right arm asymmetry may indicate technique imbalance.",
 }
 
 
@@ -202,6 +213,153 @@ def generate_report(
     return {"json_path": str(json_path), "pdf_path": str(pdf_path)}
 
 
+def generate_stroke_report(
+    clip_id: str,
+    stroke_metrics: Dict[str, Any],
+    stroke_deviations: Dict[str, Any],
+    annotated_video_path: str,
+    output_dir: str,
+) -> Dict[str, str]:
+    """Generate stroke-specific JSON and PDF reports with cyclical averaging.
+
+    Args:
+        clip_id: Clip identifier.
+        stroke_metrics: Stroke metrics payload (per-cycle and aggregate).
+        stroke_deviations: Stroke deviation scoring payload.
+        annotated_video_path: Path to the annotated video.
+        output_dir: Directory where report artifacts will be written.
+
+    Returns:
+        Paths to JSON and PDF report files.
+    """
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    json_path = output_path / f"{clip_id}_report.json"
+    pdf_path = output_path / f"{clip_id}_report.pdf"
+
+    aggregate = stroke_metrics.get("aggregate", {})
+    cycles = stroke_metrics.get("cycles", [])
+    num_cycles = int(aggregate.get("num_cycles", 0))
+    overall_severity = stroke_deviations.get("overall_severity", "OPTIMAL")
+
+    report_payload: Dict[str, Any] = {
+        "clip_id": clip_id,
+        "analysis_mode": "stroke",
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "overall_severity": overall_severity,
+        "annotated_video_path": annotated_video_path,
+        "num_cycles": num_cycles,
+        "aggregate_metrics": aggregate,
+        "per_cycle_metrics": cycles,
+        "stroke_deviations": stroke_deviations,
+    }
+
+    try:
+        with open(json_path, "w", encoding="utf-8") as handle:
+            json.dump(report_payload, handle, indent=2)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to write stroke JSON report '{json_path}': {exc}") from exc
+
+    try:
+        pdf = canvas.Canvas(str(pdf_path), pagesize=letter)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to initialize stroke PDF report '{pdf_path}': {exc}") from exc
+
+    try:
+        _draw_page_header(pdf, f"SwimVision Stroke Report: {clip_id}")
+        pdf.setFont("Helvetica", 12)
+        pdf.drawString(72, 715, f"Date: {report_payload['date']}")
+        pdf.drawString(72, 695, f"Overall Severity: {overall_severity}")
+        pdf.drawString(72, 675, f"Stroke Cycles Detected: {num_cycles}")
+        pdf.drawString(72, 655, f"Annotated Video: {annotated_video_path}")
+        pdf.showPage()
+
+        _draw_page_header(pdf, "Aggregate Stroke Metrics")
+        pdf.setFont("Helvetica", 11)
+        metric_labels = {
+            "stroke_rate": "Stroke Rate (spm)",
+            "body_roll": "Body Roll (deg)",
+            "symmetry_index": "Symmetry Index (%)",
+            "left_elbow_flexion": "Left Elbow Flexion (deg)",
+            "right_elbow_flexion": "Right Elbow Flexion (deg)",
+            "left_shoulder_rotation": "Left Shoulder Rot (deg)",
+            "right_shoulder_rotation": "Right Shoulder Rot (deg)",
+            "left_hand_speed": "Left Hand Speed (norm)",
+            "right_hand_speed": "Right Hand Speed (norm)",
+            "cycle_duration_seconds": "Cycle Duration (s)",
+        }
+        current_y = 715
+        for key, label in metric_labels.items():
+            value = aggregate.get(key, 0.0)
+            pdf.drawString(72, current_y, f"{label}: {float(value):.1f}")
+            current_y -= 18
+        pdf.showPage()
+
+        if cycles:
+            _draw_page_header(pdf, "Per-Cycle Breakdown")
+            pdf.setFont("Helvetica-Bold", 9)
+            header_y = 725
+            headers = [
+                "Cycle", "SR (spm)", "L Elbow", "R Elbow",
+                "Body Roll", "Sym %", "Dur (s)",
+            ]
+            header_x = [40, 100, 170, 240, 310, 380, 440]
+            for index, header in enumerate(headers):
+                pdf.drawString(header_x[index], header_y, header)
+
+            current_y = 705
+            pdf.setFont("Helvetica", 8)
+            for cycle in cycles:
+                sr = float(cycle.get("stroke_rate", 0))
+                le = float(cycle.get("left_elbow_flexion", 0))
+                re = float(cycle.get("right_elbow_flexion", 0))
+                br = float(cycle.get("body_roll", 0))
+                si = float(cycle.get("symmetry_index", 0))
+                dur = float(cycle.get("cycle_duration_seconds", 0))
+                row_values = [f"{sr:.1f}", f"{le:.1f}", f"{re:.1f}", f"{br:.1f}", f"{si:.1f}", f"{dur:.2f}"]
+                pdf.drawString(header_x[0], current_y, str(cycle.get("cycle_index", "")))
+                for col, val in enumerate(row_values):
+                    pdf.drawString(header_x[col + 1], current_y, val)
+                current_y -= 16
+                if current_y < 72:
+                    pdf.showPage()
+                    current_y = 725
+
+        pdf.showPage()
+        _draw_page_header(pdf, "Key Flagged Issues")
+        pdf.setFont("Helvetica", 11)
+        current_y = 715
+        flagged_rows = stroke_deviations.get("stroke_cycle", [])
+        sig_critical = [
+            row for row in flagged_rows
+            if isinstance(row, dict) and row.get("flag") in {"SIGNIFICANT", "CRITICAL"}
+        ]
+        if not sig_critical:
+            pdf.drawString(72, current_y, "No SIGNIFICANT or CRITICAL stroke deviations were detected.")
+        for row in sig_critical:
+            explanation = FLAG_EXPLANATIONS.get(
+                str(row.get("metric", "")),
+                "This metric deviated meaningfully from the expected biomechanical target.",
+            )
+            line = (
+                f"stroke | {row.get('metric', '')} | "
+                f"{row.get('flag', '')}: {explanation}"
+            )
+            pdf.drawString(72, current_y, line[:100])
+            current_y -= 22
+            if current_y < 72:
+                pdf.showPage()
+                current_y = 715
+
+        pdf.save()
+    except Exception as exc:
+        raise RuntimeError(f"Failed while composing stroke PDF report '{pdf_path}': {exc}") from exc
+
+    LOGGER.info("Generated stroke report artifacts at %s and %s", json_path, pdf_path)
+    return {"json_path": str(json_path), "pdf_path": str(pdf_path)}
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     """Create the CLI parser for report generation.
 
@@ -220,7 +378,51 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", required=True, help="Directory for report artifacts.")
     parser.add_argument("--deviations", help="Optional aggregate deviation JSON path.")
     parser.add_argument("--reaction_time", type=float, help="Optional reaction time in milliseconds.")
+    parser.add_argument(
+        "--analysis_mode",
+        choices=["dive", "stroke"],
+        default="dive",
+        help="Analysis mode: dive or stroke.",
+    )
+    parser.add_argument("--stroke_metrics", help="Path to stroke metrics JSON.")
+    parser.add_argument("--stroke_deviations", help="Path to stroke deviations JSON.")
     return parser
+
+
+def _main_stroke(args: Any) -> int:
+    """Handle stroke report generation from the CLI."""
+
+    stroke_metrics_path = Path(args.stroke_metrics) if args.stroke_metrics else Path(args.output) / f"{args.clip_id}_stroke_metrics.json"
+    stroke_deviations_path = Path(args.stroke_deviations) if args.stroke_deviations else Path(args.output) / f"{args.clip_id}_stroke_deviations.json"
+
+    try:
+        with open(stroke_metrics_path, "r", encoding="utf-8") as handle:
+            stroke_metrics = json.load(handle)
+    except Exception as exc:
+        LOGGER.error("Failed to read stroke metrics %s: %s", stroke_metrics_path, exc)
+        return 1
+
+    try:
+        with open(stroke_deviations_path, "r", encoding="utf-8") as handle:
+            stroke_deviations = json.load(handle)
+    except Exception as exc:
+        LOGGER.error("Failed to read stroke deviations %s: %s", stroke_deviations_path, exc)
+        return 1
+
+    try:
+        artifact_paths = generate_stroke_report(
+            args.clip_id,
+            stroke_metrics,
+            stroke_deviations,
+            args.video,
+            args.output,
+        )
+    except Exception as exc:
+        LOGGER.error("Stroke report generation failed: %s", exc)
+        return 1
+
+    print(json.dumps(artifact_paths, indent=2))
+    return 0
 
 
 def main() -> int:
@@ -235,6 +437,10 @@ def main() -> int:
 
     parser = build_arg_parser()
     args = parser.parse_args()
+
+    if args.analysis_mode == "stroke":
+        return _main_stroke(args)
+
     deviations_path = Path(args.deviations) if args.deviations else Path(args.output) / f"{args.clip_id}_deviations.json"
     try:
         with open(deviations_path, "r", encoding="utf-8") as handle:

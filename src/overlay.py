@@ -103,21 +103,12 @@ POSE_CONNECTIONS: Sequence[Tuple[int, int]] = (
 
 
 def _resolve_connectivity() -> Sequence[Tuple[int, int]]:
-    """Return the MediaPipe pose connectivity list.
-
-    Args:
-        None.
-
-    Returns:
-        Sequence of joint-index pairs.
-    """
-
+    """Return the MediaPipe pose connectivity list."""
     return POSE_CONNECTIONS
 
 
 def _validate_crop(crop: Sequence[int] | None, width: int, height: int) -> tuple[int, int, int, int] | None:
     """Validate crop bounds against a frame resolution."""
-
     if crop is None:
         return None
     x_coord, y_coord, crop_width, crop_height = [int(value) for value in crop]
@@ -134,7 +125,6 @@ def _validate_crop(crop: Sequence[int] | None, width: int, height: int) -> tuple
 
 def _apply_crop(frame: np.ndarray, crop: Sequence[int] | None) -> np.ndarray:
     """Crop a frame when a crop tuple is provided."""
-
     if crop is None:
         return frame
     height, width = frame.shape[:2]
@@ -146,7 +136,6 @@ def _extract_video_to_temp_frames(
     video_path: Path, crop: Sequence[int] | None = None
 ) -> tuple[tempfile.TemporaryDirectory, str]:
     """Convert a video file into temporary frame images for overlay rendering."""
-
     temp_dir = tempfile.TemporaryDirectory(prefix="swimvision_overlay_frames_")
     output_dir = Path(temp_dir.name)
     capture = cv2.VideoCapture(str(video_path))
@@ -171,7 +160,6 @@ def _extract_video_to_temp_frames(
 
 def _infer_related_path(angles_path: str, suffix: str) -> Path:
     """Infer a sibling artifact path from an angles CSV name."""
-
     angles_file = Path(angles_path)
     clip_stem = angles_file.stem
     if clip_stem.endswith("_angles"):
@@ -180,15 +168,7 @@ def _infer_related_path(angles_path: str, suffix: str) -> Path:
 
 
 def _normalize_deviation_payload(deviations: Any) -> Dict[str, Dict[str, str]]:
-    """Convert deviation input into ``phase -> metric -> flag`` form.
-
-    Args:
-        deviations: Aggregate deviation dict or mapping-like payload.
-
-    Returns:
-        Phase-to-metric flag mapping.
-    """
-
+    """Convert deviation input into phase -> metric -> flag form."""
     normalized: Dict[str, Dict[str, str]] = {}
     if isinstance(deviations, dict):
         for phase in ("block_phase", "flight_phase", "entry_phase"):
@@ -203,16 +183,7 @@ def _normalize_deviation_payload(deviations: Any) -> Dict[str, Dict[str, str]]:
 
 
 def _phase_for_frame(frame_index: int, phase_boundaries: Dict[str, int]) -> str:
-    """Resolve the named phase associated with a frame index.
-
-    Args:
-        frame_index: Zero-based frame index.
-        phase_boundaries: Detected boundary dictionary.
-
-    Returns:
-        Canonical phase name.
-    """
-
+    """Resolve the named phase associated with a frame index."""
     if phase_boundaries["block_start"] <= frame_index <= phase_boundaries["block_end"]:
         return "block_phase"
     if phase_boundaries["flight_start"] <= frame_index <= phase_boundaries["flight_end"]:
@@ -220,17 +191,29 @@ def _phase_for_frame(frame_index: int, phase_boundaries: Dict[str, int]) -> str:
     return "entry_phase"
 
 
+def _cycle_for_frame(frame_index: int, stroke_boundaries: Dict[str, Any]) -> int | None:
+    """Resolve which stroke cycle a frame belongs to. Returns cycle index or None."""
+    cycles = stroke_boundaries.get("cycles", [])
+    if not isinstance(cycles, list):
+        return None
+    for cycle in cycles:
+        if not isinstance(cycle, dict):
+            continue
+        start = min(
+            cycle.get("left_entry_frame", 0),
+            cycle.get("right_entry_frame", 0),
+        )
+        end = max(
+            cycle.get("left_recovery_end_frame", 0),
+            cycle.get("right_recovery_end_frame", 0),
+        )
+        if start <= frame_index <= end:
+            return cycle.get("cycle_index")
+    return None
+
+
 def _joint_flags_for_phase(phase_name: str, deviations: Dict[str, Dict[str, str]]) -> Dict[int, str]:
-    """Map deviation flags onto joints for a single phase.
-
-    Args:
-        phase_name: Canonical phase name.
-        deviations: Phase-to-metric flag mapping.
-
-    Returns:
-        Joint-index flag mapping.
-    """
-
+    """Map deviation flags onto joints for a single phase."""
     flags = {joint_index: "UNUSED" for joint_index in range(33)}
     metric_to_flag = deviations.get(phase_name, {})
     for metric, joints in PHASE_METRIC_TO_JOINTS.get(phase_name, {}).items():
@@ -242,17 +225,7 @@ def _joint_flags_for_phase(phase_name: str, deviations: Dict[str, Dict[str, str]
 
 
 def _pixel_coord(point: np.ndarray, width: int, height: int) -> Tuple[int, int]:
-    """Convert normalized or pixel coordinates to integer pixel positions.
-
-    Args:
-        point: Point in ``[x, y]`` format.
-        width: Frame width in pixels.
-        height: Frame height in pixels.
-
-    Returns:
-        Pixel-space integer coordinates.
-    """
-
+    """Convert normalized or pixel coordinates to integer pixel positions."""
     x_coord, y_coord = float(point[0]), float(point[1])
     if 0.0 <= x_coord <= 1.0 and 0.0 <= y_coord <= 1.0:
         return int(x_coord * width), int(y_coord * height)
@@ -267,20 +240,7 @@ def render_overlay(
     phase_boundaries: Dict[str, int],
     output_path: str,
 ) -> None:
-    """Render an annotated overlay video from frames and computed metrics.
-
-    Args:
-        frames_dir: Directory containing extracted frame images.
-        keypoints: Keypoint array with shape ``[T, 33, 4]``.
-        angles_df: Per-frame angle DataFrame.
-        deviations: Aggregate deviation payload.
-        phase_boundaries: Detected phase boundary indices.
-        output_path: Target MP4 path.
-
-    Returns:
-        None.
-    """
-
+    """Render an annotated overlay video from frames and computed metrics."""
     frame_paths = sorted(Path(frames_dir).glob("frame_*.jpg"))
     if not frame_paths:
         raise FileNotFoundError(f"No extracted frames found in '{frames_dir}'.")
@@ -395,16 +355,162 @@ def render_overlay(
     LOGGER.info("Annotated overlay written to %s", output_path)
 
 
-def build_arg_parser() -> argparse.ArgumentParser:
-    """Create the CLI parser for overlay rendering.
+def render_stroke_overlay(
+    frames_dir: str,
+    keypoints: np.ndarray,
+    angles_df: pd.DataFrame,
+    stroke_boundaries: Dict[str, Any],
+    output_path: str,
+) -> None:
+    """Render a stroke-annotated overlay video with cycle labels and arm phase info.
 
     Args:
-        None.
-
-    Returns:
-        A configured argument parser.
+        frames_dir: Directory of extracted frame images.
+        keypoints: Keypoint array [T, 33, 4].
+        angles_df: Per-frame angle DataFrame.
+        stroke_boundaries: Stroke cycle boundaries with per-arm phase info.
+        output_path: Output MP4 path.
     """
 
+    frame_paths = sorted(Path(frames_dir).glob("frame_*.jpg"))
+    if not frame_paths:
+        raise FileNotFoundError(f"No extracted frames found in '{frames_dir}'.")
+    if len(frame_paths) != keypoints.shape[0]:
+        raise ValueError(
+            f"Frame count {len(frame_paths)} does not match keypoint count {keypoints.shape[0]}."
+        )
+
+    first_frame = cv2.imread(str(frame_paths[0]))
+    if first_frame is None:
+        raise RuntimeError(f"Failed to load first frame '{frame_paths[0]}'.")
+    height, width = first_frame.shape[:2]
+    fps = int(stroke_boundaries.get("fps", 30))
+
+    try:
+        writer = cv2.VideoWriter(
+            str(output_path),
+            cv2.VideoWriter_fourcc(*"mp4v"),
+            fps,
+            (width, height),
+        )
+    except Exception as exc:
+        raise RuntimeError(f"Failed to initialize video writer '{output_path}': {exc}") from exc
+    if not writer.isOpened():
+        raise RuntimeError(f"OpenCV could not open video writer for '{output_path}'.")
+
+    connectivity = _resolve_connectivity()
+
+    try:
+        for frame_index, frame_path in enumerate(frame_paths):
+            frame = cv2.imread(str(frame_path))
+            if frame is None:
+                raise RuntimeError(f"Failed to load frame '{frame_path}'.")
+
+            frame_keypoints = keypoints[frame_index, :, :2]
+
+            # Draw skeleton
+            for start_joint, end_joint in connectivity:
+                start_point = _pixel_coord(frame_keypoints[start_joint], width, height)
+                end_point = _pixel_coord(frame_keypoints[end_joint], width, height)
+                cv2.line(frame, start_point, end_point, (200, 200, 200), 2)
+
+            # Draw joints with default color
+            for joint_index in range(33):
+                point = _pixel_coord(frame_keypoints[joint_index], width, height)
+                cv2.circle(frame, point, 4, (0, 200, 0), -1)
+
+            # Highlight wrists (stroke analysis key)
+            left_wrist = _pixel_coord(frame_keypoints[15], width, height)
+            right_wrist = _pixel_coord(frame_keypoints[16], width, height)
+            left_elbow = _pixel_coord(frame_keypoints[13], width, height)
+            right_elbow = _pixel_coord(frame_keypoints[14], width, height)
+            cv2.circle(frame, left_wrist, 7, (0, 255, 255), -1)
+            cv2.circle(frame, right_wrist, 7, (255, 0, 255), -1)
+            cv2.circle(frame, left_elbow, 6, (0, 200, 200), -1)
+            cv2.circle(frame, right_elbow, 6, (200, 0, 200), -1)
+
+            # Draw stroke cycle label
+            cycle_idx = _cycle_for_frame(frame_index, stroke_boundaries)
+            cycle_label = f"STROKE CYCLE {cycle_idx}" if cycle_idx is not None else "STROKE"
+            cv2.putText(
+                frame,
+                cycle_label,
+                (20, 30),
+                cv2.FONT_HERSHEY_DUPLEX,
+                0.9,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+
+            # Draw arm phase indicator
+            cycles = stroke_boundaries.get("cycles", [])
+            if isinstance(cycles, list) and cycle_idx is not None and cycle_idx < len(cycles):
+                cycle = cycles[cycle_idx]
+                if isinstance(cycle, dict):
+                    left_phase = _arm_phase_for_frame(frame_index, cycle, side="left")
+                    right_phase = _arm_phase_for_frame(frame_index, cycle, side="right")
+                    cv2.putText(
+                        frame,
+                        f"L: {left_phase}",
+                        (left_wrist[0] + 8, left_wrist[1] - 8),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.45,
+                        (0, 255, 255),
+                        1,
+                        cv2.LINE_AA,
+                    )
+                    cv2.putText(
+                        frame,
+                        f"R: {right_phase}",
+                        (right_wrist[0] + 8, right_wrist[1] - 8),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.45,
+                        (255, 0, 255),
+                        1,
+                        cv2.LINE_AA,
+                    )
+
+            try:
+                writer.write(frame)
+            except Exception as exc:
+                raise RuntimeError(f"Failed to encode frame {frame_index}: {exc}") from exc
+    finally:
+        writer.release()
+
+    LOGGER.info("Stroke-annotated overlay written to %s", output_path)
+
+
+def _arm_phase_for_frame(frame_index: int, cycle: Dict[str, Any], side: str = "left") -> str:
+    """Determine the stroke arm phase for a given frame within a cycle.
+
+    Args:
+        frame_index: Current frame index.
+        cycle: Stroke cycle boundary dictionary.
+        side: 'left' or 'right'.
+
+    Returns:
+        Phase label string.
+    """
+
+    entry = cycle.get(f"{side}_entry_frame", 0)
+    catch = cycle.get(f"{side}_catch_frame", 0)
+    pull_end = cycle.get(f"{side}_pull_end_frame", 0)
+    recovery_end = cycle.get(f"{side}_recovery_end_frame", 0)
+
+    if frame_index < entry:
+        return "pre-entry"
+    if frame_index < catch:
+        return "entry"
+    if frame_index < pull_end:
+        return "pull"
+    if frame_index < recovery_end:
+        return "recovery"
+    return "post"
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    """Create the CLI parser for overlay rendering."""
     parser = argparse.ArgumentParser(description="Render SwimVision annotated overlay video.")
     source_group = parser.add_mutually_exclusive_group(required=True)
     source_group.add_argument("--frames_dir", help="Directory of extracted frame images.")
@@ -421,19 +527,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Optional crop region in pixel coordinates for video inputs.",
     )
     parser.add_argument("--output", required=True, help="Output annotated MP4 path.")
+    parser.add_argument(
+        "--analysis_mode",
+        choices=["dive", "stroke"],
+        default="dive",
+        help="Analysis mode: dive or stroke.",
+    )
+    parser.add_argument("--stroke_boundaries", help="Path to stroke cycle boundaries JSON.")
     return parser
 
 
 def main() -> int:
-    """Run the command-line interface for overlay rendering.
-
-    Args:
-        None.
-
-    Returns:
-        Exit status code.
-    """
-
+    """Run the command-line interface for overlay rendering."""
     parser = build_arg_parser()
     args = parser.parse_args()
 
@@ -447,21 +552,6 @@ def main() -> int:
     except Exception as exc:
         LOGGER.error("Failed to load angles from %s: %s", args.angles, exc)
         return 1
-    deviations_path = args.deviations or _infer_related_path(args.angles, "deviations.json")
-    boundaries_path = args.boundaries or _infer_related_path(args.angles, "boundaries.json")
-
-    try:
-        with open(deviations_path, "r", encoding="utf-8") as handle:
-            deviations = json.load(handle)
-    except Exception as exc:
-        LOGGER.error("Failed to load deviations from %s: %s", deviations_path, exc)
-        return 1
-    try:
-        with open(boundaries_path, "r", encoding="utf-8") as handle:
-            phase_boundaries = json.load(handle)
-    except Exception as exc:
-        LOGGER.error("Failed to load phase boundaries from %s: %s", boundaries_path, exc)
-        return 1
 
     temp_dir: tempfile.TemporaryDirectory | None = None
     frames_dir = args.frames_dir
@@ -473,14 +563,32 @@ def main() -> int:
             return 1
 
     try:
-        render_overlay(
-            str(frames_dir),
-            keypoints,
-            angles_df,
-            deviations,
-            phase_boundaries,
-            args.output,
-        )
+        if args.analysis_mode == "stroke":
+            stroke_boundaries_path = args.stroke_boundaries or _infer_related_path(args.angles, "stroke_boundaries.json")
+            with open(stroke_boundaries_path, "r", encoding="utf-8") as handle:
+                stroke_boundaries = json.load(handle)
+            render_stroke_overlay(
+                str(frames_dir),
+                keypoints,
+                angles_df,
+                stroke_boundaries,
+                args.output,
+            )
+        else:
+            deviations_path = args.deviations or _infer_related_path(args.angles, "deviations.json")
+            boundaries_path = args.boundaries or _infer_related_path(args.angles, "boundaries.json")
+            with open(deviations_path, "r", encoding="utf-8") as handle:
+                deviations = json.load(handle)
+            with open(boundaries_path, "r", encoding="utf-8") as handle:
+                phase_boundaries = json.load(handle)
+            render_overlay(
+                str(frames_dir),
+                keypoints,
+                angles_df,
+                deviations,
+                phase_boundaries,
+                args.output,
+            )
         return 0
     except Exception as exc:
         LOGGER.error("Overlay rendering failed: %s", exc)

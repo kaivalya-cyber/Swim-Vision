@@ -32,6 +32,53 @@ OPTIMAL_RANGES: Dict[str, Dict[str, Tuple[float, float]]] = {
         "streamline_angle": (0.0, 10.0),
         "elbow_lock_angle": (170.0, 180.0),
     },
+    "stroke_catch_left": {
+        "left_elbow_flexion": (100.0, 120.0),
+        "left_shoulder_rotation": (35.0, 55.0),
+    },
+    "stroke_pull_left": {
+        "left_elbow_extension_rate": (120.0, 160.0),
+        "left_hand_speed": (0.15, 0.35),
+    },
+    "stroke_catch_right": {
+        "right_elbow_flexion": (100.0, 120.0),
+        "right_shoulder_rotation": (35.0, 55.0),
+    },
+    "stroke_pull_right": {
+        "right_elbow_extension_rate": (120.0, 160.0),
+        "right_hand_speed": (0.15, 0.35),
+    },
+    "stroke_cycle": {
+        "stroke_rate": (30.0, 60.0),
+        "body_roll": (35.0, 45.0),
+        "symmetry_index": (0.0, 10.0),
+    },
+    "butterfly_catch": {
+        "bilateral_elbow_flexion": (90.0, 110.0),
+        "bilateral_entry_width": (0.1, 0.3),
+    },
+    "butterfly_pull": {
+        "bilateral_hand_speed": (0.2, 0.4),
+        "kick_amplitude": (0.15, 0.35),
+    },
+    "butterfly_cycle": {
+        "stroke_rate": (25.0, 55.0),
+        "body_undulation": (20.0, 40.0),
+        "kick_count": (1.5, 2.5),
+    },
+    "backstroke_catch": {
+        "supine_elbow_flexion": (100.0, 120.0),
+        "hand_entry_depth": (0.05, 0.2),
+    },
+    "backstroke_pull": {
+        "supine_hand_speed": (0.2, 0.4),
+        "shoulder_rotation_back": (30.0, 50.0),
+    },
+    "backstroke_cycle": {
+        "stroke_rate": (28.0, 55.0),
+        "body_roll_back": (30.0, 45.0),
+        "symmetry_index": (0.0, 10.0),
+    },
 }
 
 DEVIATION_THRESHOLDS: Dict[str, float] = {

@@ -1,0 +1,383 @@
+"""Browser-based interface for running the SwimVision analysis pipeline."""
+
+from __future__ import annotations
+
+import json
+import os
+import threading
+import uuid
+from dataclasses import asdict, dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+from flask import Flask, abort, jsonify, redirect, request, send_file, url_for
+from werkzeug.utils import secure_filename
+
+from src.run_pipeline import run_pipeline
+from src.analytics.trend import analyze_trends
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+WEBSITE_ROOT = Path(__file__).resolve().parent
+FRONTEND_DIST_DIR = WEBSITE_ROOT / "frontend" / "dist"
+FRONTEND_INDEX_PATH = FRONTEND_DIST_DIR / "index.html"
+PUBLIC_DIR = WEBSITE_ROOT / "public"
+UPLOADS_DIR = PROJECT_ROOT / "web_uploads"
+ALLOWED_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi", ".mpg", ".mpeg", ".webm"}
+MAX_RECENT_JOBS = 8
+IS_VERCEL = bool(os.environ.get("VERCEL"))
+
+
+@dataclass
+class JobRecord:
+    """In-memory representation of a pipeline run."""
+
+    id: str
+    clip_id: str
+    original_filename: str
+    input_path: str
+    crop: list[int] | None
+    status: str = "queued"
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+    updated_at: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+    current_step: str = "Waiting to start"
+    step_index: int = 0
+    total_steps: int = 6
+    error: str | None = None
+    outputs: dict[str, str] = field(default_factory=dict)
+    summary: dict[str, Any] = field(default_factory=dict)
+    analysis_mode: str = "dive"
+    stroke_start_frame: int = 0
+
+    def touch(self) -> None:
+        self.updated_at = datetime.now().isoformat(timespec="seconds")
+
+
+app = Flask(__name__, static_folder=str(FRONTEND_DIST_DIR / "assets"), static_url_path="/assets")
+app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024 * 1024
+
+_jobs: dict[str, JobRecord] = {}
+_jobs_lock = threading.Lock()
+
+
+def _is_allowed_upload(filename: str) -> bool:
+    return Path(filename).suffix.lower() in ALLOWED_EXTENSIONS
+
+
+def _parse_crop(form: Any) -> list[int] | None:
+    raw_values = [form.get("crop_x", "").strip(), form.get("crop_y", "").strip(), form.get("crop_w", "").strip(), form.get("crop_h", "").strip()]
+    if not any(raw_values):
+        return None
+    if not all(raw_values):
+        raise ValueError("Fill all four crop fields or leave all of them blank.")
+    crop = [int(value) for value in raw_values]
+    if crop[2] <= 0 or crop[3] <= 0:
+        raise ValueError("Crop width and height must be positive integers.")
+    return crop
+
+
+def _build_summary(clip_id: str, outputs: dict[str, str]) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "phase_boundaries": {},
+        "overall_severity": None,
+        "flagged_metrics": [],
+    }
+
+    deviations_key = "deviations_json"
+    if deviations_key not in outputs:
+        deviations_key = "stroke_deviations_json"
+    
+    deviations_path_str = outputs.get(deviations_key)
+    if deviations_path_str:
+        deviations_path = Path(deviations_path_str)
+        if deviations_path.exists():
+            with open(deviations_path, "r", encoding="utf-8") as handle:
+                deviations = json.load(handle)
+            summary["phase_boundaries"] = deviations.get("phase_boundaries", {})
+            summary["overall_severity"] = deviations.get("overall_severity")
+            flagged_rows: list[dict[str, Any]] = []
+            for phase_name in ("block_phase", "flight_phase", "entry_phase", "stroke_cycle"):
+                for row in deviations.get(phase_name, []):
+                    if isinstance(row, dict) and row.get("flag") in {"MINOR", "SIGNIFICANT", "CRITICAL"}:
+                        flagged_rows.append(
+                            {
+                                "phase": phase_name.replace("_phase", "").replace("_cycle", ""),
+                                "metric": row.get("metric"),
+                                "measured": row.get("measured"),
+                                "flag": row.get("flag"),
+                            }
+                        )
+            flagged_rows.sort(key=lambda row: ("OPTIMAL", "MINOR", "SIGNIFICANT", "CRITICAL").index(row["flag"]))
+            summary["flagged_metrics"] = flagged_rows
+
+    report_key = "report_json"
+    report_path_str = outputs.get(report_key)
+    if report_path_str:
+        report_path = Path(report_path_str)
+        if report_path.exists():
+            with open(report_path, "r", encoding="utf-8") as handle:
+                report = json.load(handle)
+            summary["reaction_time_ms"] = report.get("reaction_time_ms")
+            summary["annotated_video_path"] = report.get("annotated_video_path")
+            summary["num_cycles"] = report.get("num_cycles")
+            summary["analysis_mode"] = report.get("analysis_mode")
+
+    summary["clip_id"] = clip_id
+    return summary
+
+
+def _run_job(job_id: str) -> None:
+    with _jobs_lock:
+        job = _jobs[job_id]
+        job.status = "running"
+        job.current_step = "Preparing analysis"
+        job.touch()
+
+    def _progress_callback(event: dict[str, object]) -> None:
+        with _jobs_lock:
+            active_job = _jobs[job_id]
+            active_job.total_steps = int(event.get("total_steps", active_job.total_steps))
+            if event.get("event") == "step_started":
+                active_job.step_index = int(event.get("step_index", active_job.step_index))
+                active_job.current_step = str(event.get("label", active_job.current_step))
+            elif event.get("event") == "step_completed":
+                active_job.step_index = int(event.get("step_index", active_job.step_index))
+                active_job.current_step = f"Finished {event.get('label', '')}".strip()
+            active_job.touch()
+
+    try:
+        outputs = run_pipeline(
+            input_path=job.input_path,
+            clip_id=job.clip_id,
+            crop=job.crop,
+            progress_callback=_progress_callback,
+            analysis_mode=job.analysis_mode,
+            stroke_start_frame=job.stroke_start_frame,
+        )
+        outputs_payload = {name: str(path) for name, path in outputs.items()}
+        summary = _build_summary(job.clip_id, outputs_payload)
+        with _jobs_lock:
+            active_job = _jobs[job_id]
+            active_job.status = "completed"
+            active_job.step_index = active_job.total_steps
+            active_job.current_step = "Analysis complete"
+            active_job.outputs = outputs_payload
+            active_job.summary = summary
+            active_job.touch()
+    except Exception as exc:
+        with _jobs_lock:
+            active_job = _jobs[job_id]
+            active_job.status = "failed"
+            active_job.error = str(exc)
+            active_job.current_step = "Pipeline failed"
+            active_job.touch()
+
+
+def _get_job_or_404(job_id: str) -> JobRecord:
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if job is None:
+            abort(404)
+        return job
+
+
+def _job_payload(job: JobRecord) -> dict[str, Any]:
+    payload = asdict(job)
+    payload["artifact_urls"] = {
+        name: url_for("download_artifact_api", job_id=job.id, artifact_name=name)
+        for name in job.outputs
+    }
+    return payload
+
+
+def _frontend_index_path() -> Path | None:
+    if FRONTEND_INDEX_PATH.exists():
+        return FRONTEND_INDEX_PATH
+    public_index = PUBLIC_DIR / "index.html"
+    if public_index.exists():
+        return public_index
+    return None
+
+
+@app.get("/")
+def index() -> Any:
+    return _serve_frontend()
+
+
+@app.post("/api/jobs")
+def create_job() -> Any:
+    if IS_VERCEL:
+        return (
+            jsonify(
+                {
+                    "error": "Video pipeline jobs are disabled in this Vercel deployment.",
+                    "hint": "Use this UI for report browsing and run heavy SwimVision processing on a dedicated backend/local machine.",
+                }
+            ),
+            501,
+        )
+
+    uploaded_file = request.files.get("video")
+    if uploaded_file is None or not uploaded_file.filename:
+        return jsonify({"error": "Choose a race or training video to upload."}), 400
+    if not _is_allowed_upload(uploaded_file.filename):
+        return jsonify({"error": "Upload an MP4, MOV, AVI, MPEG, or WEBM file."}), 400
+
+    clip_id = request.form.get("clip_id", "").strip() or f"swim_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    clip_id = secure_filename(clip_id) or f"swim_{uuid.uuid4().hex[:8]}"
+
+    analysis_mode = request.form.get("analysis_mode", "dive").strip()
+    if analysis_mode not in ("dive", "stroke"):
+        analysis_mode = "dive"
+
+    stroke_start_frame = 0
+    if analysis_mode == "stroke":
+        try:
+            stroke_start_frame = int(request.form.get("stroke_start_frame", "0"))
+        except (ValueError, TypeError):
+            stroke_start_frame = 0
+
+    try:
+        crop = _parse_crop(request.form)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    job_id = uuid.uuid4().hex
+    upload_dir = UPLOADS_DIR / job_id
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    input_filename = secure_filename(uploaded_file.filename) or f"{clip_id}.mov"
+    input_path = upload_dir / input_filename
+    uploaded_file.save(input_path)
+
+    job = JobRecord(
+        id=job_id,
+        clip_id=clip_id,
+        original_filename=uploaded_file.filename,
+        input_path=str(input_path),
+        crop=crop,
+        analysis_mode=analysis_mode,
+        stroke_start_frame=stroke_start_frame,
+    )
+    with _jobs_lock:
+        _jobs[job_id] = job
+
+    worker = threading.Thread(target=_run_job, args=(job_id,), daemon=True)
+    worker.start()
+    return jsonify({"job_id": job_id, "job_url": url_for("job_detail", job_id=job_id)}), 202
+
+
+@app.get("/api/jobs/<job_id>")
+def job_status(job_id: str) -> Any:
+    job = _get_job_or_404(job_id)
+    return jsonify(_job_payload(job))
+
+
+@app.get("/jobs/<job_id>")
+def job_detail(job_id: str) -> Any:
+    _get_job_or_404(job_id)
+    return _serve_frontend()
+
+
+def _download_artifact(job_id: str, artifact_name: str) -> Any:
+    job = _get_job_or_404(job_id)
+    artifact_path = job.outputs.get(artifact_name)
+    if artifact_path is None:
+        abort(404)
+    path = Path(artifact_path)
+    if not path.exists():
+        abort(404)
+    return send_file(path, as_attachment=False)
+
+
+@app.get("/api/jobs/<job_id>/download/<artifact_name>")
+def download_artifact_api(job_id: str, artifact_name: str) -> Any:
+    return _download_artifact(job_id, artifact_name)
+
+
+@app.get("/jobs/<job_id>/download/<artifact_name>")
+def download_artifact(job_id: str, artifact_name: str) -> Any:
+    return _download_artifact(job_id, artifact_name)
+
+
+@app.post("/jobs/<job_id>/rerun")
+def rerun_job(job_id: str) -> Any:
+    job = _get_job_or_404(job_id)
+    if job.status == "running":
+        return jsonify({"error": "This analysis is already running."}), 409
+
+    with _jobs_lock:
+        active_job = _jobs[job_id]
+        active_job.status = "queued"
+        active_job.error = None
+        active_job.outputs = {}
+        active_job.summary = {}
+        active_job.step_index = 0
+        active_job.current_step = "Waiting to restart"
+        active_job.touch()
+
+    worker = threading.Thread(target=_run_job, args=(job_id,), daemon=True)
+    worker.start()
+    return redirect(url_for("job_detail", job_id=job_id))
+
+
+@app.get("/api/trends")
+def trends_analysis() -> Any:
+    """Run longitudinal trend analysis across completed jobs.
+
+    Accepts ?job_ids=id1,id2,... or scans all completed jobs for report JSONs.
+    """
+
+    requested_ids = request.args.get("job_ids", "")
+    with _jobs_lock:
+        if requested_ids:
+            report_paths = []
+            for jid in requested_ids.split(","):
+                jid = jid.strip()
+                job = _jobs.get(jid)
+                if job and job.status == "completed" and "report_json" in job.outputs:
+                    report_paths.append(job.outputs["report_json"])
+        else:
+            report_paths = [
+                job.outputs["report_json"]
+                for job in _jobs.values()
+                if job.status == "completed" and "report_json" in job.outputs
+            ]
+
+    if not report_paths:
+        return jsonify({"error": "No completed reports found for trend analysis."}), 404
+
+    primary_metric = request.args.get("primary_metric", "stroke_rate")
+    try:
+        result = analyze_trends(report_paths, primary_metric=primary_metric)
+    except Exception as exc:
+        return jsonify({"error": f"Trend analysis failed: {exc}"}), 500
+
+    return jsonify(result)
+
+
+def _serve_frontend() -> Any:
+    index_path = _frontend_index_path()
+    if index_path is None:
+        return (
+            jsonify(
+                {
+                    "error": "Frontend build not found.",
+                    "hint": "Run 'npm install' and 'npm run build' inside the frontend directory.",
+                }
+            ),
+            503,
+        )
+    return send_file(index_path)
+
+
+@app.get("/<path:path>")
+def frontend_fallback(path: str) -> Any:
+    if path.startswith("api/") or path.startswith("jobs/"):
+        abort(404)
+    return _serve_frontend()
+
+
+if __name__ == "__main__":
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    app.run(debug=True)

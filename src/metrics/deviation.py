@@ -31,6 +31,11 @@ PHASE_TO_METRICS = {
     "block_phase": ["front_knee_angle", "rear_knee_angle", "hip_angle", "torso_lean"],
     "flight_phase": ["body_linearity", "entry_angle", "elbow_extension"],
     "entry_phase": ["streamline_angle", "elbow_lock_angle"],
+    "stroke_catch_left": ["left_elbow_flexion", "left_shoulder_rotation"],
+    "stroke_pull_left": ["left_elbow_extension_rate", "left_hand_speed"],
+    "stroke_catch_right": ["right_elbow_flexion", "right_shoulder_rotation"],
+    "stroke_pull_right": ["right_elbow_extension_rate", "right_hand_speed"],
+    "stroke_cycle": ["stroke_rate", "body_roll", "symmetry_index"],
 }
 FLAG_ORDER = ["OPTIMAL", "MINOR", "SIGNIFICANT", "CRITICAL"]
 
@@ -198,9 +203,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(description="Compute SwimVision phase deviations.")
     parser.add_argument("--angles", required=True, help="Path to angle CSV output.")
-    parser.add_argument("--phase", required=True, choices=sorted(PHASE_TO_METRICS), help="Phase to score.")
+    parser.add_argument("--phase", choices=sorted(PHASE_TO_METRICS), help="Phase to score.")
     parser.add_argument("--boundaries", required=True, help="Path to phase boundary JSON.")
-    parser.add_argument("--output", help="Optional CSV output path.")
+    parser.add_argument("--output", help="Optional CSV or JSON output path.")
+    parser.add_argument(
+        "--all-phases",
+        action="store_true",
+        help="Compute deviations for all standard phases and write aggregate JSON.",
+    )
     return parser
 
 
@@ -229,6 +239,27 @@ def main() -> int:
     except Exception as exc:
         LOGGER.error("Failed to read boundary JSON %s: %s", args.boundaries, exc)
         return 1
+
+    if args.all_phases:
+        try:
+            block = compute_deviations(angles_df, "block_phase", phase_boundaries)
+            flight = compute_deviations(angles_df, "flight_phase", phase_boundaries)
+            entry = compute_deviations(angles_df, "entry_phase", phase_boundaries)
+            report = aggregate_report(block, flight, entry)
+            report["phase_boundaries"] = phase_boundaries
+            if args.output:
+                with open(args.output, "w", encoding="utf-8") as handle:
+                    json.dump(report, handle, indent=2)
+                LOGGER.info("Saved aggregate deviations to %s", args.output)
+            else:
+                print(json.dumps(report, indent=2))
+            return 0
+        except Exception as exc:
+            LOGGER.error("Failed to compute all-phase deviations: %s", exc)
+            return 1
+
+    if not args.phase:
+        parser.error("Provide --phase or use --all-phases.")
 
     try:
         deviations_df = compute_deviations(angles_df, args.phase, phase_boundaries)

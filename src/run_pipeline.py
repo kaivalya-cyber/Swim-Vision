@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import time
 from typing import Callable
+
+import numpy as np
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -123,6 +126,215 @@ def _resolve_dimensions(input_path: Path, crop: list[int] | None) -> tuple[int, 
     return width, height
 
 
+def _run_stroke_pipeline(
+    resolved_input: Path,
+    clip_id: str,
+    crop_values: list[str],
+    crop: list[int] | None,
+    keypoints_path: Path,
+    confidence_path: Path,
+    angles_path: Path,
+    boundaries_path: Path,
+    deviations_path: Path,
+    annotated_path: Path,
+    report_json_path: Path,
+    report_pdf_path: Path,
+    stroke_start_frame: int,
+    progress_callback: ProgressCallback | None,
+    width: int,
+    height: int,
+    total_steps: int,
+    stroke_type: str = "auto",
+) -> dict[str, Path]:
+    """Run the stroke-analysis pipeline variant.
+
+    Shares the initial extraction and angle computation steps with the dive
+    pipeline, then runs stroke-cycle detection, stroke metrics, and an
+    extended report generation pass.
+
+    Args:
+        stroke_type: Stroke type override (auto, freestyle, butterfly, backstroke).
+    """
+
+    stroke_boundaries_path = RESULTS_DIR / f"{clip_id}_stroke_boundaries.json"
+    stroke_metrics_path = RESULTS_DIR / f"{clip_id}_stroke_metrics.json"
+    stroke_deviations_path = RESULTS_DIR / f"{clip_id}_stroke_deviations.json"
+
+    # Step 1: Extract keypoints (shared with dive pipeline)
+    extract_command = [
+        sys.executable,
+        "src/extract.py",
+        "--input",
+        str(resolved_input),
+        "--output",
+        str(PROCESSED_DIR),
+        "--clip_id",
+        clip_id,
+    ]
+    if crop_values:
+        extract_command.extend(["--crop", *crop_values])
+    _run_step(1, total_steps, "Extracting keypoints", extract_command, progress_callback=progress_callback)
+
+    # Step 2: Compute joint angles (shared)
+    joint_command = [
+        sys.executable,
+        "src/metrics/joint_angles.py",
+        "--input",
+        str(keypoints_path),
+        "--output",
+        str(RESULTS_DIR),
+        "--clip_id",
+        clip_id,
+        "--width",
+        str(width),
+        "--height",
+        str(height),
+    ]
+    _run_step(2, total_steps, "Computing joint angles", joint_command, progress_callback=progress_callback)
+
+    # Step 3: Detect stroke cycles
+    stroke_detect_command = [
+        sys.executable,
+        "src/ingest.py",
+        "detect-strokes",
+        "--keypoints",
+        str(keypoints_path),
+        "--output",
+        str(stroke_boundaries_path),
+        "--stroke_start_frame",
+        str(stroke_start_frame),
+        "--fps",
+        str(30),
+        "--width",
+        str(width),
+        "--height",
+        str(height),
+        "--stroke_type",
+        stroke_type,
+    ]
+    _run_step(3, total_steps, "Detecting stroke cycles", stroke_detect_command, progress_callback=progress_callback)
+
+    # Step 4: Compute stroke metrics
+    stroke_metrics_command = [
+        sys.executable,
+        "-m",
+        "src.metrics.stroke_metrics",
+        "--keypoints",
+        str(keypoints_path),
+        "--boundaries",
+        str(stroke_boundaries_path),
+        "--output",
+        str(stroke_metrics_path),
+    ]
+    _run_step(4, total_steps, "Computing stroke metrics", stroke_metrics_command, progress_callback=progress_callback)
+
+    # Step 5: Compute stroke deviations with type-specific ranges
+    stroke_deviation_script = (
+        "import json, sys; "
+        "from src.metrics.deviation import score_deviation; "
+        "from src.reference.optimal_ranges import get_range; "
+        "metrics = json.load(open(sys.argv[1], 'r', encoding='utf-8')); "
+        "agg = metrics.get('aggregate', {}); "
+        "detected_type = metrics.get('cycles', [{}])[0].get('stroke_type', 'freestyle') if metrics.get('cycles') else 'freestyle'; "
+        f"stroke_type = sys.argv[3] if sys.argv[3] != 'auto' else detected_type; "
+        "results = []; "
+        "if stroke_type == 'butterfly': "
+        "    metric_map = {'stroke_rate': 'butterfly_cycle', 'body_roll': 'butterfly_cycle', 'symmetry_index': 'butterfly_cycle', 'bilateral_elbow_flexion': 'butterfly_catch', 'bilateral_hand_speed': 'butterfly_pull'}; "
+        "elif stroke_type == 'backstroke': "
+        "    metric_map = {'stroke_rate': 'backstroke_cycle', 'body_roll': 'backstroke_cycle', 'symmetry_index': 'backstroke_cycle', 'supine_elbow_flexion': 'backstroke_catch', 'supine_hand_speed': 'backstroke_pull'}; "
+        "else: "
+        "    metric_map = {'stroke_rate': 'stroke_cycle', 'body_roll': 'stroke_cycle', 'symmetry_index': 'stroke_cycle', 'left_elbow_flexion': 'stroke_catch_left', 'right_elbow_flexion': 'stroke_catch_right', 'left_hand_speed': 'stroke_pull_left', 'right_hand_speed': 'stroke_pull_right', 'left_elbow_extension_rate': 'stroke_pull_left', 'right_elbow_extension_rate': 'stroke_pull_right'}; "
+        "for metric, phase in metric_map.items(): "
+        "    if metric in agg: "
+        "        try: "
+        "            o_min, o_max = get_range(phase.replace('butterfly_catch', 'butterfly_catch').replace('backstroke_catch', 'backstroke_catch').replace('backstroke_pull', 'backstroke_pull').replace('butterfly_cycle', 'butterfly_cycle').replace('backstroke_cycle', 'backstroke_cycle'), metric); "
+        "            dev, flag = score_deviation(float(agg[metric]), (o_min, o_max)); "
+        "            results.append({'metric': metric, 'phase': phase, 'measured': float(agg[metric]), 'optimal_min': o_min, 'optimal_max': o_max, 'deviation': dev, 'flag': flag}); "
+        "        except Exception: pass; "
+        "worst_flags = [r['flag'] for r in results]; "
+        "flag_order = ['OPTIMAL', 'MINOR', 'SIGNIFICANT', 'CRITICAL']; "
+        "overall = max(worst_flags, key=lambda f: flag_order.index(f)) if worst_flags else 'OPTIMAL'; "
+        "json.dump({'stroke_cycle': results, 'overall_severity': overall, 'stroke_type': stroke_type}, open(sys.argv[2], 'w', encoding='utf-8'), indent=2)"
+    )
+    stroke_deviation_command = [
+        sys.executable,
+        "-c",
+        stroke_deviation_script,
+        str(stroke_metrics_path),
+        str(stroke_deviations_path),
+        stroke_type,
+    ]
+    _run_step(5, total_steps, "Computing stroke deviations", stroke_deviation_command, progress_callback=progress_callback)
+
+    # Step 6: Render annotated overlay
+    overlay_command = [
+        sys.executable,
+        "src/overlay.py",
+        "--input",
+        str(resolved_input),
+        "--keypoints",
+        str(keypoints_path),
+        "--angles",
+        str(angles_path),
+        "--output",
+        str(annotated_path),
+        "--analysis_mode",
+        "stroke",
+        "--stroke_boundaries",
+        str(stroke_boundaries_path),
+    ]
+    if crop_values:
+        overlay_command.extend(["--crop", *crop_values])
+    _run_step(6, total_steps, "Rendering annotated overlay", overlay_command, progress_callback=progress_callback)
+
+    # Step 7: Generate report
+    report_command = [
+        sys.executable,
+        "src/report.py",
+        "--clip_id",
+        clip_id,
+        "--keypoints",
+        str(keypoints_path),
+        "--angles",
+        str(angles_path),
+        "--video",
+        str(annotated_path),
+        "--output",
+        str(RESULTS_DIR),
+        "--analysis_mode",
+        "stroke",
+        "--stroke_metrics",
+        str(stroke_metrics_path),
+        "--stroke_deviations",
+        str(stroke_deviations_path),
+    ]
+    _run_step(7, total_steps, "Generating report", report_command, progress_callback=progress_callback)
+
+    outputs = {
+        "keypoints": keypoints_path,
+        "confidence": confidence_path,
+        "angles_csv": angles_path,
+        "stroke_boundaries_json": stroke_boundaries_path,
+        "stroke_metrics_json": stroke_metrics_path,
+        "stroke_deviations_json": stroke_deviations_path,
+        "annotated_video": annotated_path,
+        "report_json": report_json_path,
+        "report_pdf": report_pdf_path,
+    }
+
+    _emit_progress(
+        progress_callback,
+        {
+            "event": "pipeline_completed",
+            "clip_id": clip_id,
+            "total_steps": total_steps,
+            "analysis_mode": "stroke",
+            "outputs": {name: str(path) for name, path in outputs.items()},
+        },
+    )
+    return outputs
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     """Create the CLI parser for the end-to-end pipeline."""
 
@@ -136,6 +348,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
         metavar=("X", "Y", "W", "H"),
         help="Optional crop region in pixel coordinates.",
     )
+    parser.add_argument(
+        "--analysis_mode",
+        choices=["dive", "stroke"],
+        default="dive",
+        help="Analysis mode: dive (block/flight/entry) or stroke (freestyle cycles).",
+    )
+    parser.add_argument(
+        "--stroke_start_frame",
+        type=int,
+        default=0,
+        help="Frame index where stroke analysis begins (after dive entry).",
+    )
+    parser.add_argument(
+        "--stroke_type",
+        choices=["freestyle", "butterfly", "backstroke", "auto"],
+        default="auto",
+        help="Stroke type override (default: auto-detect).",
+    )
     return parser
 
 
@@ -144,8 +374,21 @@ def run_pipeline(
     clip_id: str,
     crop: list[int] | None = None,
     progress_callback: ProgressCallback | None = None,
+    analysis_mode: str = "dive",
+    stroke_start_frame: int = 0,
+    stroke_type: str = "auto",
 ) -> dict[str, Path]:
-    """Run the full SwimVision pipeline and return the generated artifact paths."""
+    """Run the full SwimVision pipeline and return the generated artifact paths.
+
+    Args:
+        input_path: Path to the input video file.
+        clip_id: Identifier used to name all output artifacts.
+        crop: Optional [x, y, w, h] crop region in pixels.
+        progress_callback: Optional callback for progress events.
+        analysis_mode: "dive" for block/flight/entry or "stroke" for freestyle cycles.
+        stroke_start_frame: Frame index where stroke analysis begins.
+        stroke_type: Stroke type override (auto, freestyle, butterfly, backstroke).
+    """
 
     resolved_input = Path(input_path).expanduser().resolve()
     if not resolved_input.exists():
@@ -166,7 +409,7 @@ def run_pipeline(
     report_pdf_path = RESULTS_DIR / f"{clip_id}_report.pdf"
 
     width, height = _resolve_dimensions(resolved_input, crop)
-    total_steps = 6
+    total_steps = 7 if analysis_mode == "stroke" else 6
 
     _emit_progress(
         progress_callback,
@@ -175,9 +418,34 @@ def run_pipeline(
             "clip_id": clip_id,
             "input_path": str(resolved_input),
             "total_steps": total_steps,
+            "analysis_mode": analysis_mode,
             "crop": crop or [],
         },
     )
+
+    if analysis_mode == "stroke":
+        return _run_stroke_pipeline(
+            resolved_input=resolved_input,
+            clip_id=clip_id,
+            crop_values=crop_values,
+            crop=crop,
+            keypoints_path=keypoints_path,
+            confidence_path=confidence_path,
+            angles_path=angles_path,
+            boundaries_path=boundaries_path,
+            deviations_path=deviations_path,
+            annotated_path=annotated_path,
+            report_json_path=report_json_path,
+            report_pdf_path=report_pdf_path,
+            stroke_start_frame=stroke_start_frame,
+            progress_callback=progress_callback,
+            width=width,
+            height=height,
+            total_steps=total_steps,
+            stroke_type=stroke_type,
+        )
+
+    # --- Dive analysis pipeline (default) ---
 
     extract_command = [
         sys.executable,
@@ -224,22 +492,15 @@ def run_pipeline(
 
     deviation_command = [
         sys.executable,
-        "-c",
-        (
-            "import json, sys, pandas as pd; "
-            "from src.metrics.deviation import compute_deviations, aggregate_report; "
-            "angles = pd.read_csv(sys.argv[1], index_col=0); "
-            "boundaries = json.load(open(sys.argv[2], 'r', encoding='utf-8')); "
-            "block = compute_deviations(angles, 'block_phase', boundaries); "
-            "flight = compute_deviations(angles, 'flight_phase', boundaries); "
-            "entry = compute_deviations(angles, 'entry_phase', boundaries); "
-            "report = aggregate_report(block, flight, entry); "
-            "report['phase_boundaries'] = boundaries; "
-            "json.dump(report, open(sys.argv[3], 'w', encoding='utf-8'), indent=2)"
-        ),
+        "-m",
+        "src.metrics.deviation",
+        "--angles",
         str(angles_path),
+        "--boundaries",
         str(boundaries_path),
+        "--output",
         str(deviations_path),
+        "--all-phases",
     ]
     _run_step(4, total_steps, "Computing deviations", deviation_command, progress_callback=progress_callback)
 
@@ -306,7 +567,14 @@ def main() -> int:
 
     input_path = (PROJECT_ROOT / args.input).resolve() if not os.path.isabs(args.input) else Path(args.input)
     try:
-        outputs = run_pipeline(input_path=input_path, clip_id=args.clip_id, crop=args.crop)
+        outputs = run_pipeline(
+            input_path=input_path,
+            clip_id=args.clip_id,
+            crop=args.crop,
+            analysis_mode=args.analysis_mode,
+            stroke_start_frame=args.stroke_start_frame,
+            stroke_type=args.stroke_type,
+        )
     except FileNotFoundError as exc:
         print(str(exc))
         return 1
