@@ -7,11 +7,15 @@ import {
   Timer,
   Dumbbell,
   User,
+  Calendar,
+  GitCompare,
+  ArrowRight,
+  X,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { fetchTrends } from "@/api";
+import { fetchTrends, compareSwimmers } from "@/api";
 import { SiteHeader } from "@/components/site-header";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -67,19 +71,62 @@ function TrendDirection({ direction, change }) {
   );
 }
 
+function ComparisonBar({ valueA, valueB, maxValue, color, label }) {
+  const pctA = maxValue > 0 ? Math.min((valueA / maxValue) * 100, 100) : 0;
+  const pctB = maxValue > 0 ? Math.min((valueB / maxValue) * 100, 100) : 0;
+  return (
+    <div className="flex items-center gap-2">
+      <span className="w-28 text-xs text-white/50 truncate">{label}</span>
+      <div className="flex-1 space-y-1">
+        <div className="flex items-center gap-2">
+          <span className="w-8 text-[10px] text-white/40 text-right">A</span>
+          <div className="flex-1 h-2 bg-white/10 rounded-full overflow-hidden">
+            <div
+              className="h-full rounded-full transition-all duration-500"
+              style={{ width: `${pctA}%`, backgroundColor: color }}
+            />
+          </div>
+          <span className="w-12 text-[10px] text-white/70 text-right">{valueA?.toFixed(1) || "—"}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="w-8 text-[10px] text-white/40 text-right">B</span>
+          <div className="flex-1 h-2 bg-white/10 rounded-full overflow-hidden">
+            <div
+              className="h-full rounded-full transition-all duration-500"
+              style={{ width: `${pctB}%`, backgroundColor: "#fb923c" }}
+            />
+          </div>
+          <span className="w-12 text-[10px] text-white/70 text-right">{valueB?.toFixed(1) || "—"}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function TrendsPage() {
   const [trends, setTrends] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [primaryMetric, setPrimaryMetric] = useState("stroke_rate");
   const [swimmerId, setSwimmerId] = useState("");
+  const [analysisMode, setAnalysisMode] = useState("");
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
+
+  // Comparison mode state
+  const [compareMode, setCompareMode] = useState(false);
+  const [swimmerA, setSwimmerA] = useState("");
+  const [swimmerB, setSwimmerB] = useState("");
+  const [comparison, setComparison] = useState(null);
+  const [compareLoading, setCompareLoading] = useState(false);
+  const [compareError, setCompareError] = useState("");
 
   useEffect(() => {
     let cancelled = false;
     async function load() {
       try {
         setLoading(true);
-        const data = await fetchTrends(primaryMetric, swimmerId);
+        const data = await fetchTrends(primaryMetric, swimmerId, analysisMode, startDate, endDate);
         if (cancelled) return;
         setTrends(data);
         setError("");
@@ -92,11 +139,34 @@ export function TrendsPage() {
     }
     load();
     return () => { cancelled = true; };
-  }, [primaryMetric, swimmerId]);
+  }, [primaryMetric, swimmerId, analysisMode, startDate, endDate]);
+
+  async function handleCompare() {
+    if (!swimmerA || !swimmerB) {
+      setCompareError("Select two swimmers to compare.");
+      return;
+    }
+    if (swimmerA === swimmerB) {
+      setCompareError("Select two different swimmers to compare.");
+      return;
+    }
+    setCompareLoading(true);
+    setCompareError("");
+    try {
+      const data = await compareSwimmers(swimmerA, swimmerB, primaryMetric);
+      setComparison(data);
+    } catch (err) {
+      setCompareError(err.message);
+    } finally {
+      setCompareLoading(false);
+    }
+  }
 
   const summary = trends?.trend_summary;
   const sessions = trends?.sessions || [];
   const metricTrends = trends?.metric_trends || {};
+  const availableSwimmers = trends?.available_swimmer_ids || [];
+  const availableModes = trends?.available_analysis_modes || [];
 
   return (
     <div className="min-h-screen pb-24">
@@ -112,28 +182,203 @@ export function TrendsPage() {
           <p className="mt-2 text-white/50">Longitudinal analysis across completed swim analysis sessions.</p>
         </div>
 
-        {/* Swimmer filter */}
-        {trends?.available_swimmer_ids?.length > 0 && (
-          <Card className="mb-6">
-            <CardContent className="flex items-center gap-4 p-4">
-              <User className="h-4 w-4 text-white/50" />
-              <label className="text-sm text-white/60">Swimmer:</label>
-              <select
-                value={swimmerId}
-                onChange={(e) => setSwimmerId(e.target.value)}
-                className="bg-transparent text-white text-sm border border-white/20 rounded px-3 py-1.5 min-w-[160px]"
+        {/* Filter Bar */}
+        <Card className="mb-6">
+          <CardContent className="flex flex-wrap items-center gap-3 p-4">
+            {/* Swimmer filter */}
+            <User className="h-4 w-4 text-white/50" />
+            <label className="text-xs text-white/50">Swimmer:</label>
+            <select
+              value={swimmerId}
+              onChange={(e) => setSwimmerId(e.target.value)}
+              className="bg-transparent text-white text-sm border border-white/20 rounded px-2 py-1 min-w-[130px]"
+            >
+              <option value="" className="bg-gray-900">All swimmers</option>
+              {availableSwimmers.map((sid) => (
+                <option key={sid} value={sid} className="bg-gray-900">{sid}</option>
+              ))}
+            </select>
+
+            {/* Analysis mode filter */}
+            <span className="w-px h-5 bg-white/10 mx-1" />
+            <label className="text-xs text-white/50">Mode:</label>
+            <select
+              value={analysisMode}
+              onChange={(e) => setAnalysisMode(e.target.value)}
+              className="bg-transparent text-white text-sm border border-white/20 rounded px-2 py-1 min-w-[100px]"
+            >
+              <option value="" className="bg-gray-900">All modes</option>
+              {availableModes.map((mode) => (
+                <option key={mode} value={mode} className="bg-gray-900 capitalize">{mode}</option>
+              ))}
+            </select>
+
+            {/* Date range */}
+            <span className="w-px h-5 bg-white/10 mx-1" />
+            <Calendar className="h-4 w-4 text-white/50" />
+            <label className="text-xs text-white/50">From:</label>
+            <input
+              type="date"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+              className="bg-transparent text-white text-sm border border-white/20 rounded px-2 py-1 w-[140px] [color-scheme:dark]"
+            />
+            <label className="text-xs text-white/50">To:</label>
+            <input
+              type="date"
+              value={endDate}
+              onChange={(e) => setEndDate(e.target.value)}
+              className="bg-transparent text-white text-sm border border-white/20 rounded px-2 py-1 w-[140px] [color-scheme:dark]"
+            />
+            {(startDate || endDate) && (
+              <button
+                onClick={() => { setStartDate(""); setEndDate(""); }}
+                className="text-xs text-white/40 hover:text-white/70 transition"
               >
-                <option value="" className="bg-gray-900">All swimmers</option>
-                {trends.available_swimmer_ids.map((sid) => (
-                  <option key={sid} value={sid} className="bg-gray-900">
-                    {sid}
-                  </option>
-                ))}
-              </select>
-              {swimmerId && (
-                <span className="text-xs text-white/40">
-                  Showing {trends.trend_summary?.num_sessions || 0} sessions for {swimmerId}
-                </span>
+                <X className="h-3 w-3" />
+              </button>
+            )}
+
+            {/* Compare toggle */}
+            <span className="w-px h-5 bg-white/10 mx-1" />
+            <button
+              onClick={() => { setCompareMode(!compareMode); if (compareMode) setComparison(null); }}
+              className={`inline-flex items-center gap-1.5 text-xs rounded-full px-3 py-1 transition ${
+                compareMode
+                  ? "bg-blue-500/20 text-blue-400 border border-blue-500/30"
+                  : "text-white/50 hover:text-white border border-white/10 hover:border-white/20"
+              }`}
+            >
+              <GitCompare className="h-3.5 w-3.5" />
+              Compare
+            </button>
+
+            {/* Active filters summary */}
+            {(swimmerId || analysisMode || startDate || endDate) && (
+              <span className="text-xs text-white/40 ml-auto">
+                {summary?.num_sessions || 0} session{(summary?.num_sessions || 0) !== 1 ? "s" : ""}
+              </span>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Comparison Panel */}
+        {compareMode && (
+          <Card className="mb-6 border-blue-500/20">
+            <CardContent className="p-5 space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <GitCompare className="h-4 w-4 text-blue-400" />
+                  <h2 className="text-lg font-semibold text-white">Swimmer Comparison</h2>
+                </div>
+                <button
+                  onClick={() => { setCompareMode(false); setComparison(null); }}
+                  className="text-white/40 hover:text-white/70 transition"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3">
+                <label className="text-xs text-white/50">Swimmer A:</label>
+                <select
+                  value={swimmerA}
+                  onChange={(e) => setSwimmerA(e.target.value)}
+                  className="bg-transparent text-white text-sm border border-white/20 rounded px-2 py-1 min-w-[130px]"
+                >
+                  <option value="" className="bg-gray-900">Select swimmer</option>
+                  {availableSwimmers.map((sid) => (
+                    <option key={sid} value={sid} className="bg-gray-900">{sid}</option>
+                  ))}
+                </select>
+
+                <ArrowRight className="h-4 w-4 text-white/30" />
+
+                <label className="text-xs text-white/50">Swimmer B:</label>
+                <select
+                  value={swimmerB}
+                  onChange={(e) => setSwimmerB(e.target.value)}
+                  className="bg-transparent text-white text-sm border border-white/20 rounded px-2 py-1 min-w-[130px]"
+                >
+                  <option value="" className="bg-gray-900">Select swimmer</option>
+                  {availableSwimmers.map((sid) => (
+                    <option key={sid} value={sid} className="bg-gray-900">{sid}</option>
+                  ))}
+                </select>
+
+                <button
+                  onClick={handleCompare}
+                  disabled={compareLoading || !swimmerA || !swimmerB}
+                  className="inline-flex items-center gap-1.5 rounded-full bg-blue-500/20 text-blue-400 border border-blue-500/30 px-4 py-1.5 text-xs transition hover:bg-blue-500/30 disabled:opacity-40"
+                >
+                  {compareLoading ? "Comparing..." : "Run comparison"}
+                </button>
+              </div>
+
+              {compareError && (
+                <p className="text-sm text-red-400">{compareError}</p>
+              )}
+
+              {comparison && (
+                <div className="space-y-4 pt-2 border-t border-white/10">
+                  {/* Head-to-head summary */}
+                  {comparison.comparison && (
+                    <div className="grid gap-3 md:grid-cols-3">
+                      <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+                        <p className="text-xs text-white/40 mb-1">{comparison.comparison.swimmer_a_name}</p>
+                        <p className="text-xl text-white font-semibold">
+                          {comparison.comparison.swimmer_a_mean?.toFixed(1) || "—"}
+                        </p>
+                        <TrendDirection
+                          direction={comparison.comparison.swimmer_a_direction}
+                          change={comparison.swimmer_a?.trend_summary?.primary_trend?.change}
+                        />
+                      </div>
+                      <div className="rounded-xl border border-blue-500/20 bg-blue-500/[0.04] p-4 text-center">
+                        <p className="text-xs text-blue-400/60 mb-1">Difference</p>
+                        <p className="text-xl text-blue-400 font-semibold">
+                          {(comparison.comparison.diff > 0 ? "+" : "")}{comparison.comparison.diff?.toFixed(1) || "—"}
+                        </p>
+                        <p className="text-xs text-white/40">
+                          {primaryMetric in METRIC_CONFIG ? METRIC_CONFIG[primaryMetric].unit : ""}
+                        </p>
+                      </div>
+                      <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+                        <p className="text-xs text-white/40 mb-1">{comparison.comparison.swimmer_b_name}</p>
+                        <p className="text-xl text-white font-semibold">
+                          {comparison.comparison.swimmer_b_mean?.toFixed(1) || "—"}
+                        </p>
+                        <TrendDirection
+                          direction={comparison.comparison.swimmer_b_direction}
+                          change={comparison.swimmer_b?.trend_summary?.primary_trend?.change}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Side-by-side metric bars */}
+                  {comparison.swimmer_a?.metric_trends && comparison.swimmer_b?.metric_trends && (
+                    <div className="space-y-2 pt-2">
+                      <p className="text-xs text-white/40 mb-2">Metric Breakdown</p>
+                      {Object.keys(comparison.swimmer_a.metric_trends).map((metric) => {
+                        const cfg = METRIC_CONFIG[metric] || { label: metric, unit: "", color: "#60a5fa" };
+                        const valA = comparison.swimmer_a.metric_trends[metric]?.mean;
+                        const valB = comparison.swimmer_b.metric_trends[metric]?.mean;
+                        const maxVal = Math.max(valA || 0, valB || 0, 1);
+                        return (
+                          <ComparisonBar
+                            key={metric}
+                            valueA={valA}
+                            valueB={valB}
+                            maxValue={maxVal}
+                            color={cfg.color}
+                            label={`${cfg.label} (${cfg.unit})`}
+                          />
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
               )}
             </CardContent>
           </Card>
@@ -241,6 +486,12 @@ export function TrendsPage() {
                       <p className="text-xl text-white">{summary.primary_trend.slope?.toFixed(3)}</p>
                     </div>
                   </div>
+
+                  {summary.date_range?.first && (
+                    <p className="text-xs text-white/40 mb-3">
+                      {summary.date_range.first} — {summary.date_range.last}
+                    </p>
+                  )}
 
                   <p className="text-sm text-white/60 italic">{summary.summary_verdict}</p>
                 </CardContent>

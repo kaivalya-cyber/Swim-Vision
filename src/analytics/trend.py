@@ -176,12 +176,18 @@ def _compute_trend(values: List[float], metric_name: str = "") -> Dict[str, floa
 def analyze_trends(
     report_paths: List[str],
     primary_metric: str = "stroke_rate",
+    analysis_mode: str = "",
+    start_date: str = "",
+    end_date: str = "",
 ) -> Dict[str, Any]:
     """Analyze longitudinal trends across multiple SwimVision session reports.
 
     Args:
         report_paths: List of paths to *_report.json files, in chronological order.
         primary_metric: Key metric to focus trend analysis on.
+        analysis_mode: Filter sessions by mode (dive, stroke, or empty for all).
+        start_date: ISO date string for earliest session to include.
+        end_date: ISO date string for latest session to include.
 
     Returns:
         Dictionary with sessions, trend_summary, and per-metric trend data.
@@ -190,8 +196,15 @@ def analyze_trends(
     sessions: List[SessionRecord] = []
     for path_str in report_paths:
         record = _load_report(Path(path_str))
-        if record is not None:
-            sessions.append(record)
+        if record is None:
+            continue
+        if analysis_mode and record.analysis_mode != analysis_mode:
+            continue
+        if start_date and record.date and record.date < start_date:
+            continue
+        if end_date and record.date and record.date > end_date:
+            continue
+        sessions.append(record)
 
     if not sessions:
         LOGGER.warning("No valid reports loaded for trend analysis.")

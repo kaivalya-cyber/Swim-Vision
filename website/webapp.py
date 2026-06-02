@@ -337,11 +337,16 @@ def trends_analysis() -> Any:
 
     Accepts ?job_ids=id1,id2,... or scans all completed jobs for report JSONs.
     Accepts ?swimmer_id=... to filter by a specific swimmer.
+    Accepts ?analysis_mode=dive|stroke to filter by mode.
+    Accepts ?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD for date range.
     Accepts ?primary_metric=stroke_rate to set the primary metric.
     """
 
     requested_ids = request.args.get("job_ids", "")
     swimmer_filter = request.args.get("swimmer_id", "").strip()
+    analysis_mode_filter = request.args.get("analysis_mode", "").strip()
+    start_date = request.args.get("start_date", "").strip()
+    end_date = request.args.get("end_date", "").strip()
     with _jobs_lock:
         if requested_ids:
             report_paths = []
@@ -350,13 +355,15 @@ def trends_analysis() -> Any:
                 job = _jobs.get(jid)
                 if job and job.status == "completed" and "report_json" in job.outputs:
                     if not swimmer_filter or job.swimmer_id == swimmer_filter:
-                        report_paths.append(job.outputs["report_json"])
+                        if not analysis_mode_filter or job.analysis_mode == analysis_mode_filter:
+                            report_paths.append(job.outputs["report_json"])
         else:
             report_paths = [
                 job.outputs["report_json"]
                 for job in _jobs.values()
                 if job.status == "completed" and "report_json" in job.outputs
                 and (not swimmer_filter or job.swimmer_id == swimmer_filter)
+                and (not analysis_mode_filter or job.analysis_mode == analysis_mode_filter)
             ]
 
     if not report_paths:
@@ -364,7 +371,13 @@ def trends_analysis() -> Any:
 
     primary_metric = request.args.get("primary_metric", "stroke_rate")
     try:
-        result = analyze_trends(report_paths, primary_metric=primary_metric)
+        result = analyze_trends(
+            report_paths,
+            primary_metric=primary_metric,
+            analysis_mode=analysis_mode_filter,
+            start_date=start_date,
+            end_date=end_date,
+        )
     except Exception as exc:
         return jsonify({"error": f"Trend analysis failed: {exc}"}), 500
 
@@ -373,8 +386,95 @@ def trends_analysis() -> Any:
         swimmer_ids = sorted(
             {job.swimmer_id for job in _jobs.values() if job.swimmer_id and job.status == "completed"}
         )
+        available_modes = sorted(
+            {job.analysis_mode for job in _jobs.values() if job.status == "completed"}
+        )
     result["available_swimmer_ids"] = list(swimmer_ids)
+    result["available_analysis_modes"] = list(available_modes)
     result["active_swimmer_id"] = swimmer_filter or ""
+    result["active_analysis_mode"] = analysis_mode_filter or ""
+
+    return jsonify(result)
+
+
+@app.get("/api/trends/compare")
+def trends_compare() -> Any:
+    """Compare trends between two swimmers side-by-side.
+
+    Accepts ?swimmer_a=id1&swimmer_b=id2&primary_metric=stroke_rate
+    &analysis_mode=dive|stroke&start_date=YYYY-MM-DD&end_date=YYYY-MM-DD.
+    """
+
+    swimmer_a = request.args.get("swimmer_a", "").strip()
+    swimmer_b = request.args.get("swimmer_b", "").strip()
+    if not swimmer_a or not swimmer_b:
+        return jsonify({"error": "Provide swimmer_a and swimmer_b query parameters."}), 400
+    if swimmer_a == swimmer_b:
+        return jsonify({"error": "Select two different swimmers to compare."}), 400
+
+    primary_metric = request.args.get("primary_metric", "stroke_rate")
+    analysis_mode_filter = request.args.get("analysis_mode", "").strip()
+    start_date = request.args.get("start_date", "").strip()
+    end_date = request.args.get("end_date", "").strip()
+
+    with _jobs_lock:
+        paths_a = [
+            job.outputs["report_json"]
+            for job in _jobs.values()
+            if job.status == "completed" and "report_json" in job.outputs
+            and job.swimmer_id == swimmer_a
+        ]
+        paths_b = [
+            job.outputs["report_json"]
+            for job in _jobs.values()
+            if job.status == "completed" and "report_json" in job.outputs
+            and job.swimmer_id == swimmer_b
+        ]
+
+    result = {"swimmer_a": {}, "swimmer_b": {}, "primary_metric": primary_metric}
+
+    if paths_a:
+        try:
+            result["swimmer_a"] = analyze_trends(
+                paths_a,
+                primary_metric=primary_metric,
+                analysis_mode=analysis_mode_filter,
+                start_date=start_date,
+                end_date=end_date,
+            )
+        except Exception as exc:
+            result["swimmer_a"] = {"error": str(exc)}
+    else:
+        result["swimmer_a"] = {"error": f"No completed sessions for {swimmer_a}"}
+
+    if paths_b:
+        try:
+            result["swimmer_b"] = analyze_trends(
+                paths_b,
+                primary_metric=primary_metric,
+                analysis_mode=analysis_mode_filter,
+                start_date=start_date,
+                end_date=end_date,
+            )
+        except Exception as exc:
+            result["swimmer_b"] = {"error": str(exc)}
+    else:
+        result["swimmer_b"] = {"error": f"No completed sessions for {swimmer_b}"}
+
+    # Build comparison summary
+    trend_a = result["swimmer_a"].get("trend_summary", {}).get("primary_trend", {})
+    trend_b = result["swimmer_b"].get("trend_summary", {}).get("primary_trend", {})
+
+    if trend_a and trend_b:
+        result["comparison"] = {
+            "swimmer_a_name": swimmer_a,
+            "swimmer_b_name": swimmer_b,
+            "swimmer_a_mean": trend_a.get("mean"),
+            "swimmer_b_mean": trend_b.get("mean"),
+            "swimmer_a_direction": trend_a.get("direction"),
+            "swimmer_b_direction": trend_b.get("direction"),
+            "diff": (trend_a.get("mean", 0) or 0) - (trend_b.get("mean", 0) or 0),
+        }
 
     return jsonify(result)
 
