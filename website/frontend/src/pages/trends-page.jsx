@@ -1,3 +1,4 @@
+import React, { useEffect, useState, useMemo, useCallback } from "react";
 import {
   ArrowLeft,
   TrendingUp,
@@ -21,8 +22,11 @@ import {
   Moon,
   Eye,
   Bell,
+  Maximize2,
+  GitCommit,
+  ChevronRight,
+  Layers,
 } from "lucide-react";
-import { useEffect, useState, useMemo, useCallback } from "react";
 import { Link } from "react-router-dom";
 
 import { fetchTrends, compareSwimmers } from "@/api";
@@ -31,25 +35,48 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 
 const METRIC_CONFIG = {
-  stroke_rate: { label: "Stroke Rate", unit: "spm", icon: Activity, color: "#60a5fa" },
-  body_roll: { label: "Body Roll", unit: "°", icon: Gauge, color: "#f472b6" },
-  symmetry_index: { label: "Symmetry", unit: "%", icon: Dumbbell, color: "#a78bfa" },
-  cycle_duration_seconds: { label: "Cycle Duration", unit: "s", icon: Timer, color: "#34d399" },
-  left_elbow_flexion: { label: "L Elbow Flexion", unit: "°", icon: Activity, color: "#fbbf24" },
-  right_elbow_flexion: { label: "R Elbow Flexion", unit: "°", icon: Activity, color: "#fb923c" },
+  stroke_rate: { label: "Stroke Rate", unit: "spm", icon: Activity, color: "#60a5fa", higherIsBetter: true },
+  body_roll: { label: "Body Roll", unit: "°", icon: Gauge, color: "#f472b6", higherIsBetter: true },
+  symmetry_index: { label: "Symmetry", unit: "%", icon: Dumbbell, color: "#a78bfa", higherIsBetter: false },
+  cycle_duration_seconds: { label: "Cycle Duration", unit: "s", icon: Timer, color: "#34d399", higherIsBetter: false },
+  left_elbow_flexion: { label: "L Elbow Flexion", unit: "°", icon: Activity, color: "#fbbf24", higherIsBetter: true },
+  right_elbow_flexion: { label: "R Elbow Flexion", unit: "°", icon: Activity, color: "#fb923c", higherIsBetter: true },
 };
 
 const METRIC_CONFIG_CB = {
-  stroke_rate: { label: "Stroke Rate", unit: "spm", icon: Activity, color: "#0072B2" },
-  body_roll: { label: "Body Roll", unit: "°", icon: Gauge, color: "#E69F00" },
-  symmetry_index: { label: "Symmetry", unit: "%", icon: Dumbbell, color: "#009E73" },
-  cycle_duration_seconds: { label: "Cycle Duration", unit: "s", icon: Timer, color: "#CC79A7" },
-  left_elbow_flexion: { label: "L Elbow Flexion", unit: "°", icon: Activity, color: "#56B4E9" },
-  right_elbow_flexion: { label: "R Elbow Flexion", unit: "°", icon: Activity, color: "#D55E00" },
+  stroke_rate: { label: "Stroke Rate", unit: "spm", icon: Activity, color: "#0072B2", higherIsBetter: true },
+  body_roll: { label: "Body Roll", unit: "°", icon: Gauge, color: "#E69F00", higherIsBetter: true },
+  symmetry_index: { label: "Symmetry", unit: "%", icon: Dumbbell, color: "#009E73", higherIsBetter: false },
+  cycle_duration_seconds: { label: "Cycle Duration", unit: "s", icon: Timer, color: "#CC79A7", higherIsBetter: false },
+  left_elbow_flexion: { label: "L Elbow Flexion", unit: "°", icon: Activity, color: "#56B4E9", higherIsBetter: true },
+  right_elbow_flexion: { label: "R Elbow Flexion", unit: "°", icon: Activity, color: "#D55E00", higherIsBetter: true },
 };
 
-function Sparkline({ values, dates, color, metric, height = 40, width = 120, unit, goalValue }) {
-  const [hoverIdx, setHoverIdx] = useState(null);
+function parsePhaseMetrics(metrics, analysisMode) {
+  if (!metrics) return [];
+  const phaseMap = {};
+  Object.entries(metrics).forEach(([key, value]) => {
+    if (analysisMode === "dive") {
+      const phaseMatch = key.match(/^(block|flight|entry)_phase_(.+)$/);
+      if (phaseMatch) {
+        const phase = phaseMatch[1];
+        const metricName = phaseMatch[2].replace(/_/g, " ");
+        if (!phaseMap[phase]) phaseMap[phase] = [];
+        phaseMap[phase].push({ name: metricName, value });
+      }
+    } else {
+      if (!phaseMap["stroke"]) phaseMap["stroke"] = [];
+      phaseMap["stroke"].push({ name: key.replace(/_/g, " "), value });
+    }
+  });
+  return Object.entries(phaseMap).map(([phase, items]) => ({
+    phase: phase.charAt(0).toUpperCase() + phase.slice(1).replace(/_/g, " "),
+    metrics: items,
+  }));
+}
+
+function Sparkline({ values, dates, color, metric, height = 40, width = 120, unit, goalValue, crosshairIdx, onCrosshairChange, onZoom }) {
+  const [localHover, setLocalHover] = useState(null);
 
   const { points, dotCoords, pathLength, gradientId, safeColor, h, padding, goalY } = useMemo(() => {
     if (!values || values.length < 2) return { points: "", pathLength: 0, dotCoords: [] };
@@ -87,24 +114,36 @@ function Sparkline({ values, dates, color, metric, height = 40, width = 120, uni
     return { points: pts, dotCoords: dots, pathLength: len, gradientId: gId, safeColor: c, h: hgt, padding: p, goalY: gY };
   }, [values, color, metric, width, height, goalValue]);
 
+  const activeIdx = crosshairIdx != null ? crosshairIdx : localHover;
+
   const handleKeyDown = useCallback((e) => {
     if (!dotCoords.length) return;
     if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
       e.preventDefault();
-      setHoverIdx(prev => {
+      const next = (prev) => {
         if (prev == null) return e.key === "ArrowLeft" ? dotCoords.length - 1 : 0;
-        const next = e.key === "ArrowLeft" ? prev - 1 : prev + 1;
-        if (next < 0) return dotCoords.length - 1;
-        if (next >= dotCoords.length) return 0;
-        return next;
-      });
+        const n = e.key === "ArrowLeft" ? prev - 1 : prev + 1;
+        if (n < 0) return dotCoords.length - 1;
+        if (n >= dotCoords.length) return 0;
+        return n;
+      };
+      if (onCrosshairChange) {
+        onCrosshairChange(prev => (prev == null ? next(0) : next(prev)));
+      } else {
+        setLocalHover(next);
+      }
     } else if (e.key === "Enter") {
       e.preventDefault();
-      setHoverIdx(prev => (prev != null ? null : 0));
+      if (onCrosshairChange) {
+        onCrosshairChange(prev => (prev != null ? null : 0));
+      } else {
+        setLocalHover(prev => (prev != null ? null : 0));
+      }
     } else if (e.key === "Escape") {
-      setHoverIdx(null);
+      if (onCrosshairChange) onCrosshairChange(null);
+      setLocalHover(null);
     }
-  }, [dotCoords.length]);
+  }, [dotCoords.length, onCrosshairChange]);
 
   if (!points || !pathLength) return null;
 
@@ -114,7 +153,7 @@ function Sparkline({ values, dates, color, metric, height = 40, width = 120, uni
       style={{ width, height }}
       tabIndex={0}
       onKeyDown={handleKeyDown}
-      onMouseLeave={() => setHoverIdx(null)}
+      onMouseLeave={() => { setLocalHover(null); if (onCrosshairChange) onCrosshairChange(null); }}
       aria-label={`Sparkline for ${metric || "metric"}`}
     >
       <svg width={width} height={height} style={{ overflow: "visible" }}>
@@ -124,6 +163,10 @@ function Sparkline({ values, dates, color, metric, height = 40, width = 120, uni
             <stop offset="100%" stopColor={safeColor} stopOpacity="0.02" />
           </linearGradient>
         </defs>
+        {/* Crosshair vertical line */}
+        {activeIdx != null && dotCoords[activeIdx] && (
+          <line x1={dotCoords[activeIdx].x} y1={0} x2={dotCoords[activeIdx].x} y2={h + padding * 2} stroke="rgba(255,255,255,0.35)" strokeWidth="0.5" strokeDasharray="3 2" pointerEvents="none" />
+        )}
         {goalY != null && (
           <>
             <line x1={0} y1={goalY} x2={width} y2={goalY} stroke={safeColor} strokeWidth="1" strokeDasharray="4 3" opacity="0.5" />
@@ -133,32 +176,42 @@ function Sparkline({ values, dates, color, metric, height = 40, width = 120, uni
         <polygon points={`${padding},${h + padding} ${points} ${width - padding},${h + padding}`} fill={`url(#${gradientId})`} className="spark-fill-appear" />
         <polyline points={points} fill="none" stroke={safeColor} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" strokeDasharray={pathLength} strokeDashoffset={pathLength} className="spark-line-animate" />
         {dotCoords.map((d) => (
-          <circle key={d.idx} cx={d.x} cy={d.y} r={6} fill="transparent" stroke="transparent" style={{ cursor: "pointer" }} onMouseEnter={() => setHoverIdx(d.idx)} onClick={() => setHoverIdx(d.idx === hoverIdx ? null : d.idx)} />
+          <circle key={d.idx} cx={d.x} cy={d.y} r={6} fill="transparent" stroke="transparent" style={{ cursor: "pointer" }}
+            onMouseEnter={() => onCrosshairChange ? onCrosshairChange(d.idx) : setLocalHover(d.idx)}
+            onClick={() => {
+              if (onCrosshairChange) onCrosshairChange(d.idx === activeIdx ? null : d.idx);
+              else setLocalHover(d.idx === activeIdx ? null : d.idx);
+            }} />
         ))}
-        {hoverIdx != null && dotCoords[hoverIdx] && (
-          <circle cx={dotCoords[hoverIdx].x} cy={dotCoords[hoverIdx].y} r={3} fill={safeColor} stroke="#fff" strokeWidth="1" />
+        {activeIdx != null && dotCoords[activeIdx] && (
+          <circle cx={dotCoords[activeIdx].x} cy={dotCoords[activeIdx].y} r={3} fill={safeColor} stroke="#fff" strokeWidth="1" />
         )}
       </svg>
-      {hoverIdx != null && dotCoords[hoverIdx] && (
-        <div className="absolute z-20 rounded-lg border border-white/10 bg-gray-900/95 backdrop-blur px-2 py-1 text-[10px] text-white shadow-lg pointer-events-none whitespace-nowrap" style={{ left: Math.min(dotCoords[hoverIdx].x, width - 80), top: Math.max(0, dotCoords[hoverIdx].y - 32) }}>
-          <p className="font-medium">{dotCoords[hoverIdx].v.toFixed(1)} {unit || ""}</p>
-          {dates && dates[hoverIdx] && <p className="text-white/50">{dates[hoverIdx]}</p>}
+      {activeIdx != null && dotCoords[activeIdx] && (
+        <div className="absolute z-20 rounded-lg border border-white/10 bg-gray-900/95 backdrop-blur px-2 py-1 text-[10px] text-white shadow-lg pointer-events-none whitespace-nowrap" style={{ left: Math.min(dotCoords[activeIdx].x, width - 80), top: Math.max(0, dotCoords[activeIdx].y - 32) }}>
+          <p className="font-medium">{dotCoords[activeIdx].v.toFixed(1)} {unit || ""}</p>
+          {dates && dates[activeIdx] && <p className="text-white/50">{dates[activeIdx]}</p>}
         </div>
       )}
     </div>
   );
 }
 
-function TrendBar({ value, maxValue, color, label, sparkValues, sparkMetric, sparkDates, unit, goalValue }) {
+function TrendBar({ value, maxValue, color, label, sparkValues, sparkMetric, sparkDates, unit, goalValue, crosshairIdx, onCrosshairChange, onZoom }) {
   const pct = maxValue > 0 ? Math.min((value / maxValue) * 100, 100) : 0;
   return (
-    <div className="flex items-center gap-1 sm:gap-2">
+    <div className="flex items-center gap-1 sm:gap-2 group">
       <span className="w-20 sm:w-28 text-[10px] sm:text-xs text-white/50 truncate">{label}</span>
       <div className="flex-1 h-2 bg-white/10 rounded-full overflow-hidden">
         <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, backgroundColor: color }} />
       </div>
-      <Sparkline values={sparkValues} dates={sparkDates} color={color} metric={sparkMetric} unit={unit} goalValue={goalValue} />
+      <Sparkline values={sparkValues} dates={sparkDates} color={color} metric={sparkMetric} unit={unit} goalValue={goalValue} crosshairIdx={crosshairIdx} onCrosshairChange={onCrosshairChange} />
       <span className="w-10 sm:w-14 text-[10px] sm:text-xs text-white/70 text-right">{value.toFixed(1)}</span>
+      {onZoom && (
+        <button onClick={(e) => { e.stopPropagation(); onZoom(sparkMetric); }} className="opacity-0 group-hover:opacity-100 transition ml-0.5" title="Zoom chart">
+          <Maximize2 className="h-3 w-3 text-white/40 hover:text-white/70" />
+        </button>
+      )}
     </div>
   );
 }
@@ -187,6 +240,17 @@ function ComparisonBar({ valueA, valueB, maxValue, color, label }) {
   );
 }
 
+function computeBaselinePct(curVal, baseVal, higherIsBetter) {
+  if (baseVal == null || curVal == null) return null;
+  if (Math.abs(baseVal) < 0.001) return { pct: 0, cls: "text-white/40" };
+  const diff = ((curVal - baseVal) / Math.abs(baseVal)) * 100;
+  const improves = higherIsBetter ? diff > 0 : diff < 0;
+  const declines = higherIsBetter ? diff < 0 : diff > 0;
+  if (improves) return { pct: diff, cls: "text-emerald-400" };
+  if (declines) return { pct: diff, cls: "text-red-400" };
+  return { pct: diff, cls: "text-white/40" };
+}
+
 export function TrendsPage() {
   const [trends, setTrends] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -201,6 +265,11 @@ export function TrendsPage() {
   const [copied, setCopied] = useState(false);
   const [goalValue, setGoalValue] = useState("");
   const [thresholdValue, setThresholdValue] = useState("");
+  const [expandedSessionIdx, setExpandedSessionIdx] = useState(null);
+  const [baselineIdx, setBaselineIdx] = useState(null);
+  const [crosshairIdx, setCrosshairIdx] = useState(null);
+  const [zoomedMetric, setZoomedMetric] = useState(null);
+
   const [cbPalette, setCbPalette] = useState(() => {
     return typeof window !== "undefined" ? localStorage.getItem("swimvision-cb-palette") === "true" : false;
   });
@@ -234,6 +303,9 @@ export function TrendsPage() {
         const data = await fetchTrends(primaryMetric, swimmerId, analysisMode, startDate, endDate, aggregation);
         if (cancelled) return;
         setTrends(data);
+        setExpandedSessionIdx(null);
+        setBaselineIdx(null);
+        setCrosshairIdx(null);
         setError("");
       } catch (err) {
         if (cancelled) return;
@@ -288,6 +360,7 @@ export function TrendsPage() {
   const metricTrends = trends?.metric_trends || {};
   const availableSwimmers = trends?.available_swimmer_ids || [];
   const availableModes = trends?.available_analysis_modes || [];
+  const primaryCfg = activeMetricConfig[primaryMetric] || { label: primaryMetric, unit: "", color: "#60a5fa", higherIsBetter: true };
 
   const sparklineData = useMemo(() => {
     const data = {};
@@ -332,6 +405,16 @@ export function TrendsPage() {
     return { outlierIds, count: outlierIds.size, bounds: { lower, upper, mean }, method: outlierMethod };
   }, [sessions, primaryMetric, outlierMethod]);
 
+  // Zoom modal data
+  const zoomData = useMemo(() => {
+    if (!zoomedMetric) return null;
+    const cfg = activeMetricConfig[zoomedMetric] || { label: zoomedMetric, unit: "", color: "#60a5fa" };
+    const vals = sparklineData[zoomedMetric];
+    const dates = sparklineDates;
+    if (!vals || vals.length < 2) return null;
+    return { metric: zoomedMetric, cfg, vals, dates, color: cfg.color };
+  }, [zoomedMetric, activeMetricConfig, sparklineData, sparklineDates]);
+
   return (
     <div className="min-h-screen pb-16 sm:pb-24">
       <style>{`
@@ -339,6 +422,8 @@ export function TrendsPage() {
         .spark-line-animate { animation: sparkline-draw 0.8s ease-out forwards; }
         @keyframes spark-fill-in { from { opacity: 0; } to { opacity: 1; } }
         .spark-fill-appear { animation: spark-fill-in 0.6s ease-out 0.3s forwards; opacity: 0; }
+        @keyframes slide-down { from { opacity: 0; max-height: 0; } to { opacity: 1; max-height: 600px; } }
+        .expand-panel { animation: slide-down 0.3s ease-out forwards; overflow: hidden; }
         :root, [data-theme="dark"] { --bg-color: #0a0a0a; --card-bg: rgba(255,255,255,0.03); --text-primary: #ffffff; --text-secondary: rgba(255,255,255,0.7); --text-muted: rgba(255,255,255,0.5); --border-color: rgba(255,255,255,0.1); --border-light: rgba(255,255,255,0.05); }
         [data-theme="light"] { --bg-color: #f8f9fa; --card-bg: #ffffff; --text-primary: #1a1a2e; --text-secondary: #4a4a6a; --text-muted: #6b7280; --border-color: #e5e7eb; --border-light: #f0f0f0; }
         body { background-color: var(--bg-color); color: var(--text-primary); transition: background-color 0.3s, color 0.3s; }
@@ -351,7 +436,7 @@ export function TrendsPage() {
         [data-theme="light"] .text-white\\/40, [data-theme="light"] .text-white\\/50, [data-theme="light"] .text-white\\/55, [data-theme="light"] .text-white\\/58, [data-theme="light"] .text-white\\/60, [data-theme="light"] .text-white\\/72, [data-theme="light"] .text-white\\/70, [data-theme="light"] .text-white\\/80 { color: #4a4a6a !important; }
         [data-theme="light"] .bg-black\\/35 { background: rgba(255,255,255,0.8) !important; }
         [data-theme="light"] select option { background: #fff; color: #1a1a2e; }
-        [data-theme="light"] input[type=\"date\"] { color-scheme: light; }
+        [data-theme="light"] input[type="date"] { color-scheme: light; }
         [data-theme="light"] input { color: #1a1a2e; }
         [data-theme="light"] ::placeholder { color: #9ca3af; }
         @media (max-width: 640px) {
@@ -403,7 +488,7 @@ export function TrendsPage() {
             <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="bg-transparent text-white text-xs sm:text-sm border border-white/20 rounded px-1 sm:px-2 py-1 w-[110px] sm:w-[140px] [color-scheme:dark] hide-mobile" />
 
             <span className="w-px h-4 sm:h-5 bg-white/10 mx-0.5 sm:mx-1" />
-            <input type="number" step="any" value={goalValue} onChange={(e) => setGoalValue(e.target.value)} placeholder={activeMetricConfig[primaryMetric]?.unit || "Goal"} className="bg-transparent text-white text-xs sm:text-sm border border-white/20 rounded px-2 py-1 w-[65px] sm:w-[80px] placeholder:text-white/20" />
+            <input type="number" step="any" value={goalValue} onChange={(e) => setGoalValue(e.target.value)} placeholder={primaryCfg.unit || "Goal"} className="bg-transparent text-white text-xs sm:text-sm border border-white/20 rounded px-2 py-1 w-[65px] sm:w-[80px] placeholder:text-white/20" />
 
             <span className="w-px h-4 sm:h-5 bg-white/10 mx-0.5 sm:mx-1" />
             <input type="number" step="any" value={thresholdValue} onChange={(e) => setThresholdValue(e.target.value)} placeholder="Alert" className="bg-transparent text-white text-xs sm:text-sm border border-white/20 rounded px-2 py-1 w-[65px] sm:w-[80px] placeholder:text-white/20" />
@@ -416,6 +501,12 @@ export function TrendsPage() {
             <button onClick={() => { setCompareMode(!compareMode); if (compareMode) setComparison(null); }} className={`inline-flex items-center gap-1 text-[10px] sm:text-xs rounded-full px-2 sm:px-3 py-1 transition ${compareMode ? "bg-blue-500/20 text-blue-400 border border-blue-500/30" : "text-white/50 hover:text-white border border-white/10 hover:border-white/20"}`}><GitCompare className="h-3 w-3 sm:h-3.5 sm:w-3.5" /><span className="hidden sm:inline">Compare</span></button>
             <button onClick={() => setTheme(theme === "dark" ? "light" : "dark")} className="inline-flex items-center gap-1 text-[10px] sm:text-xs rounded-full px-2 sm:px-3 py-1 transition text-white/50 hover:text-white border border-white/10 hover:border-white/20 hide-mobile" title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}>{theme === "dark" ? <Sun className="h-3 w-3 sm:h-3.5 sm:w-3.5" /> : <Moon className="h-3 w-3 sm:h-3.5 sm:w-3.5" />}</button>
             <button onClick={toggleCb} className={`inline-flex items-center gap-1 text-[10px] sm:text-xs rounded-full px-2 sm:px-3 py-1 transition ${cbPalette ? "bg-purple-500/20 text-purple-400 border-purple-500/30" : "text-white/50 hover:text-white border border-white/10 hover:border-white/20"}`} title="Toggle color-blind friendly palette"><Eye className="h-3 w-3 sm:h-3.5 sm:w-3.5" /><span className="hidden sm:inline">{cbPalette ? "CB" : ""}</span></button>
+            {baselineIdx != null && sessions[baselineIdx] && (
+              <button onClick={() => setBaselineIdx(null)} className="inline-flex items-center gap-1 text-[10px] sm:text-xs rounded-full px-2 sm:px-3 py-1 transition bg-emerald-500/15 text-emerald-400 border border-emerald-500/30" title="Clear baseline">
+                <GitCommit className="h-3 w-3 sm:h-3.5 sm:w-3.5" />
+                <span className="hidden sm:inline">Clear Baseline</span>
+              </button>
+            )}
           </CardContent>
         </Card>
 
@@ -436,7 +527,7 @@ export function TrendsPage() {
                   {comparison.comparison && (
                     <div className="grid gap-2 sm:gap-3 grid-cols-3">
                       <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3 sm:p-4"><p className="text-[10px] sm:text-xs text-white/40 mb-1">{comparison.comparison.swimmer_a_name}</p><p className="text-lg sm:text-xl text-white font-semibold">{comparison.comparison.swimmer_a_mean?.toFixed(1) || "—"}</p><TrendDirection direction={comparison.comparison.swimmer_a_direction} change={comparison.swimmer_a?.trend_summary?.primary_trend?.change} /></div>
-                      <div className="rounded-xl border border-blue-500/20 bg-blue-500/[0.04] p-3 sm:p-4 text-center"><p className="text-[10px] sm:text-xs text-blue-400/60 mb-1">Difference</p><p className="text-lg sm:text-xl text-blue-400 font-semibold">{(comparison.comparison.diff > 0 ? "+" : "")}{comparison.comparison.diff?.toFixed(1) || "—"}</p><p className="text-[10px] sm:text-xs text-white/40">{primaryMetric in activeMetricConfig ? activeMetricConfig[primaryMetric].unit : ""}</p></div>
+                      <div className="rounded-xl border border-blue-500/20 bg-blue-500/[0.04] p-3 sm:p-4 text-center"><p className="text-[10px] sm:text-xs text-blue-400/60 mb-1">Difference</p><p className="text-lg sm:text-xl text-blue-400 font-semibold">{(comparison.comparison.diff > 0 ? "+" : "")}{comparison.comparison.diff?.toFixed(1) || "—"}</p><p className="text-[10px] sm:text-xs text-white/40">{primaryCfg.unit}</p></div>
                       <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3 sm:p-4"><p className="text-[10px] sm:text-xs text-white/40 mb-1">{comparison.comparison.swimmer_b_name}</p><p className="text-lg sm:text-xl text-white font-semibold">{comparison.comparison.swimmer_b_mean?.toFixed(1) || "—"}</p><TrendDirection direction={comparison.comparison.swimmer_b_direction} change={comparison.swimmer_b?.trend_summary?.primary_trend?.change} /></div>
                     </div>
                   )}
@@ -470,10 +561,13 @@ export function TrendsPage() {
             {summary.primary_trend && (
               <Card><CardContent className="p-4 sm:p-6">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-3 sm:mb-4 gap-2">
-                  <div className="flex items-center gap-2 sm:gap-3">
-                    {(() => { const cfg = activeMetricConfig[primaryMetric] || { icon: Activity, color: "#60a5fa" }; const Icon = cfg.icon; return <Icon className="h-4 w-4 sm:h-5 sm:w-5" style={{ color: cfg.color }} />; })()}
-                    <h2 className="text-base sm:text-lg font-semibold text-white">{activeMetricConfig[primaryMetric]?.label || primaryMetric}</h2>
-                    <Sparkline values={sparklineData[primaryMetric]} dates={sparklineDates} color={activeMetricConfig[primaryMetric]?.color || "#60a5fa"} metric={primaryMetric} width={120} height={40} unit={activeMetricConfig[primaryMetric]?.unit || ""} goalValue={parsedGoal} />
+                  <div className="flex items-center gap-2 sm:gap-3 group">
+                    {(() => { const Icon = primaryCfg.icon || Activity; return <Icon className="h-4 w-4 sm:h-5 sm:w-5" style={{ color: primaryCfg.color }} />; })()}
+                    <h2 className="text-base sm:text-lg font-semibold text-white">{primaryCfg.label}</h2>
+                    <Sparkline values={sparklineData[primaryMetric]} dates={sparklineDates} color={primaryCfg.color} metric={primaryMetric} width={120} height={40} unit={primaryCfg.unit} goalValue={parsedGoal} crosshairIdx={crosshairIdx} onCrosshairChange={setCrosshairIdx} />
+                    <button onClick={() => setZoomedMetric(primaryMetric)} className="opacity-0 group-hover:opacity-100 transition ml-0.5" title="Zoom chart">
+                      <Maximize2 className="h-3 w-3 sm:h-3.5 sm:w-3.5 text-white/40 hover:text-white/70" />
+                    </button>
                   </div>
                   <TrendDirection direction={summary.primary_trend.direction} change={summary.primary_trend.change} />
                 </div>
@@ -493,7 +587,7 @@ export function TrendsPage() {
               <div className="space-y-2 sm:space-y-3">
                 {Object.entries(metricTrends).map(([metric, trend]) => {
                   const cfg = activeMetricConfig[metric] || { label: metric, unit: "", color: "#60a5fa" };
-                  return (<TrendBar key={metric} value={trend.mean || 0} maxValue={Math.max(...Object.values(metricTrends).map((t) => t.mean || 0), 1)} color={cfg.color} label={`${cfg.label} (${cfg.unit})`} sparkValues={sparklineData[metric]} sparkDates={sparklineDates} sparkMetric={metric} unit={cfg.unit} goalValue={metric === primaryMetric ? parsedGoal : null} />);
+                  return (<TrendBar key={metric} value={trend.mean || 0} maxValue={Math.max(...Object.values(metricTrends).map((t) => t.mean || 0), 1)} color={cfg.color} label={`${cfg.label} (${cfg.unit})`} sparkValues={sparklineData[metric]} sparkDates={sparklineDates} sparkMetric={metric} unit={cfg.unit} goalValue={metric === primaryMetric ? parsedGoal : null} crosshairIdx={crosshairIdx} onCrosshairChange={setCrosshairIdx} onZoom={setZoomedMetric} />);
                 })}
               </div>
             </CardContent></Card>
@@ -512,25 +606,91 @@ export function TrendsPage() {
               </div>
               <div className="overflow-x-auto -mx-4 sm:mx-0">
                 <table className="w-full text-[11px] sm:text-sm">
-                  <thead><tr className="border-b border-white/10 text-white/50"><th className="py-1.5 sm:py-2 text-left font-medium px-2 sm:px-0">Session</th><th className="py-1.5 sm:py-2 text-left font-medium px-1">Date</th><th className="py-1.5 sm:py-2 text-left font-medium px-1 hide-mobile">Mode</th><th className="py-1.5 sm:py-2 text-left font-medium px-1">Severity</th><th className="py-1.5 sm:py-2 text-right font-medium px-1">{activeMetricConfig[primaryMetric]?.label || primaryMetric}</th><th className="py-1.5 sm:py-2 text-left font-medium w-16 sm:w-20 no-print px-1"></th></tr></thead>
+                  <thead><tr className="border-b border-white/10 text-white/50">
+                    <th className="py-1.5 sm:py-2 text-left font-medium px-2 sm:px-0">Session</th>
+                    <th className="py-1.5 sm:py-2 text-left font-medium px-1">Date</th>
+                    <th className="py-1.5 sm:py-2 text-left font-medium px-1 hide-mobile">Mode</th>
+                    <th className="py-1.5 sm:py-2 text-left font-medium px-1">Severity</th>
+                    <th className="py-1.5 sm:py-2 text-right font-medium px-1">{primaryCfg.label}</th>
+                    {baselineIdx != null && <th className="py-1.5 sm:py-2 text-right font-medium px-1">% vs Base</th>}
+                    <th className="py-1.5 sm:py-2 text-left font-medium w-16 sm:w-28 no-print px-1"></th>
+                  </tr></thead>
                   <tbody>
                     {sessions.map((session, idx) => {
                       const isOutlier = outlierInfo.outlierIds.has(session.session_id || idx);
                       const isAlert = thresholdInfo.alertIds.has(session.session_id || idx);
+                      const isExpanded = expandedSessionIdx === idx;
+                      const isBase = baselineIdx === idx;
+                      const phases = parsePhaseMetrics(session.metrics, session.analysis_mode);
+                      const baselineInfo = baselineIdx != null && baselineIdx !== idx
+                        ? computeBaselinePct(session.metrics?.[primaryMetric], sessions[baselineIdx]?.metrics?.[primaryMetric], primaryCfg.higherIsBetter)
+                        : null;
+
                       return (
-                        <tr key={idx} className={`border-b border-white/5 hover:bg-white/[0.02] ${isOutlier ? "bg-amber-500/[0.04]" : ""} ${isAlert ? "bg-red-500/[0.06]" : ""}`}>
-                          <td className="py-2 sm:py-3 text-white/80 px-2 sm:px-0 truncate max-w-[80px] sm:max-w-none">{session.session_id}</td>
-                          <td className="py-2 sm:py-3 text-white/50 px-1">{session.date || "—"}</td>
-                          <td className="py-2 sm:py-3 px-1 hide-mobile"><span className="text-white/60">{session.analysis_mode}</span></td>
-                          <td className="py-2 sm:py-3 px-1"><Badge className={session.overall_severity === "CRITICAL" ? "bg-red-500/15 text-red-400 border-red-500/30" : session.overall_severity === "SIGNIFICANT" ? "bg-orange-500/15 text-orange-400 border-orange-500/30" : session.overall_severity === "MINOR" ? "bg-yellow-500/15 text-yellow-400 border-yellow-500/30" : "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"}>{session.overall_severity}</Badge></td>
-                          <td className={`py-2 sm:py-3 text-right px-1 ${isOutlier ? "text-amber-400 font-medium" : isAlert ? "text-red-400 font-medium" : "text-white/70"}`}>{session.metrics?.[primaryMetric]?.toFixed(1) || "—"}</td>
-                          <td className="py-2 sm:py-3 no-print px-1">
-                            <div className="flex flex-col gap-0.5 sm:flex-row sm:gap-1">
-                              {isOutlier && <Badge className="bg-amber-500/15 text-amber-400 border-amber-500/30 gap-0.5 text-[9px] sm:text-xs"><AlertTriangle className="h-2 w-2 sm:h-3 sm:w-3" />{outlierMethod === "2sigma" ? "2σ" : "IQR"}</Badge>}
-                              {isAlert && <Badge className="bg-red-500/15 text-red-400 border-red-500/30 gap-0.5 text-[9px] sm:text-xs"><Bell className="h-2 w-2 sm:h-3 sm:w-3" />Alert</Badge>}
-                            </div>
-                          </td>
-                        </tr>
+                        <React.Fragment key={idx}>
+                          <tr className={`border-b border-white/5 hover:bg-white/[0.04] cursor-pointer transition-colors ${isOutlier ? "bg-amber-500/[0.04]" : ""} ${isAlert ? "bg-red-500/[0.06]" : ""} ${isBase ? "bg-emerald-500/[0.06]" : ""}`} onClick={() => setExpandedSessionIdx(prev => prev === idx ? null : idx)}>
+                            <td className="py-2 sm:py-3 text-white/80 px-2 sm:px-0 truncate max-w-[80px] sm:max-w-none">
+                              <div className="flex items-center gap-1">
+                                <ChevronRight className={`h-3 w-3 text-white/30 transition-transform flex-shrink-0 ${isExpanded ? "rotate-90" : ""}`} />
+                                {session.session_id}
+                              </div>
+                            </td>
+                            <td className="py-2 sm:py-3 text-white/50 px-1">{session.date || "—"}</td>
+                            <td className="py-2 sm:py-3 px-1 hide-mobile"><span className="text-white/60">{session.analysis_mode}</span></td>
+                            <td className="py-2 sm:py-3 px-1"><Badge className={session.overall_severity === "CRITICAL" ? "bg-red-500/15 text-red-400 border-red-500/30" : session.overall_severity === "SIGNIFICANT" ? "bg-orange-500/15 text-orange-400 border-orange-500/30" : session.overall_severity === "MINOR" ? "bg-yellow-500/15 text-yellow-400 border-yellow-500/30" : "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"}>{session.overall_severity}</Badge></td>
+                            <td className={`py-2 sm:py-3 text-right px-1 ${isOutlier ? "text-amber-400 font-medium" : isAlert ? "text-red-400 font-medium" : isBase ? "text-emerald-400 font-medium" : "text-white/70"}`}>{session.metrics?.[primaryMetric]?.toFixed(1) || "—"}</td>
+                            {baselineIdx != null && (
+                              <td className={`py-2 sm:py-3 text-right px-1 font-medium ${isBase ? "text-emerald-400" : baselineInfo?.cls || "text-white/40"}`}>
+                                {isBase ? "Baseline" : baselineInfo ? `${baselineInfo.pct > 0 ? "+" : ""}${baselineInfo.pct.toFixed(1)}%` : "—"}
+                              </td>
+                            )}
+                            <td className="py-2 sm:py-3 no-print px-1">
+                              <div className="flex items-center gap-0.5 sm:gap-1">
+                                {isOutlier && <Badge className="bg-amber-500/15 text-amber-400 border-amber-500/30 gap-0.5 text-[9px] sm:text-xs"><AlertTriangle className="h-2 w-2 sm:h-3 sm:w-3" />{outlierMethod === "2sigma" ? "2σ" : "IQR"}</Badge>}
+                                {isAlert && <Badge className="bg-red-500/15 text-red-400 border-red-500/30 gap-0.5 text-[9px] sm:text-xs"><Bell className="h-2 w-2 sm:h-3 sm:w-3" />Alert</Badge>}
+                                {isBase && <Badge className="bg-emerald-500/15 text-emerald-400 border-emerald-500/30 gap-0.5 text-[9px] sm:text-xs"><GitCommit className="h-2 w-2 sm:h-3 sm:w-3" />Base</Badge>}
+                                <button onClick={(e) => { e.stopPropagation(); setBaselineIdx(prev => prev === idx ? null : idx); }} className={`ml-0.5 p-0.5 rounded transition ${isBase ? "text-emerald-400 bg-emerald-500/10" : "text-white/25 hover:text-white/60 hover:bg-white/10"}`} title={isBase ? "Remove baseline" : "Set as baseline"}><GitCommit className="h-3 w-3 sm:h-3.5 sm:w-3.5" /></button>
+                              </div>
+                            </td>
+                          </tr>
+                          {/* Session Explorer Panel */}
+                          {isExpanded && (
+                            <tr className="border-b border-white/5 bg-black/20">
+                              <td colSpan={baselineIdx != null ? 7 : 6} className="p-3 sm:p-4 expand-panel">
+                                <div className="space-y-3">
+                                  <div className="flex items-center gap-2 text-[10px] sm:text-xs text-white/40">
+                                    <Layers className="h-3 w-3 sm:h-3.5 sm:w-3.5" />
+                                    <span>Session detail — {session.session_id}</span>
+                                    <span className="text-white/20">|</span>
+                                    <span>{session.date || "No date"}</span>
+                                    <span className="text-white/20">|</span>
+                                    <span className="capitalize">{session.analysis_mode} mode</span>
+                                    {session.num_cycles > 0 && <><span className="text-white/20">|</span><span>{session.num_cycles} cycles</span></>}
+                                  </div>
+                                  {phases.length === 0 ? (
+                                    <p className="text-[10px] sm:text-xs text-white/30 italic">No phase metrics available for this session.</p>
+                                  ) : (
+                                    <div className="grid gap-2 sm:gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
+                                      {phases.map((group) => (
+                                        <div key={group.phase} className="rounded-lg border border-white/10 bg-white/[0.03] p-2 sm:p-3">
+                                          <h4 className="text-[10px] sm:text-xs font-medium text-white/60 mb-1.5 sm:mb-2 uppercase tracking-wider">{group.phase}</h4>
+                                          <div className="space-y-1">
+                                            {group.metrics.map((m, mi) => (
+                                              <div key={mi} className="flex items-center justify-between gap-2">
+                                                <span className="text-[10px] sm:text-xs text-white/50 capitalize truncate">{m.name}</span>
+                                                <span className="text-[10px] sm:text-xs text-white/80 font-mono tabular-nums">{typeof m.value === "number" ? m.value.toFixed(2) : String(m.value)}</span>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
                       );
                     })}
                   </tbody>
@@ -539,13 +699,115 @@ export function TrendsPage() {
               {(outlierInfo.count > 0 || thresholdInfo.count > 0) && (
                 <div className="mt-2 sm:mt-3 flex flex-wrap gap-x-3 gap-y-1 text-[10px] sm:text-xs">
                   {outlierInfo.count > 0 && <p className="text-amber-400/60">{outlierInfo.count} {outlierMethod === "2sigma" ? "2σ" : "IQR"} outlier{outlierInfo.count !== 1 ? "s" : ""}</p>}
-                  {thresholdInfo.count > 0 && <p className="text-red-400/60">{thresholdInfo.count} threshold alert{thresholdInfo.count !== 1 ? "s" : ""} ({activeMetricConfig[primaryMetric]?.label || primaryMetric} &lt; {parsedThreshold})</p>}
+                  {thresholdInfo.count > 0 && <p className="text-red-400/60">{thresholdInfo.count} threshold alert{thresholdInfo.count !== 1 ? "s" : ""} ({primaryCfg.label} &lt; {parsedThreshold})</p>}
+                  {baselineIdx != null && <p className="text-emerald-400/60">Baseline: {sessions[baselineIdx]?.session_id || "—"}</p>}
                 </div>
               )}
             </CardContent></Card>
           </div>
         )}
+
+        {/* Zoom Modal */}
+        {zoomedMetric && zoomData && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 no-print" onClick={() => setZoomedMetric(null)}>
+            <Card className="w-full max-w-3xl max-h-[90vh] overflow-auto" onClick={e => e.stopPropagation()}>
+              <CardContent className="p-4 sm:p-6 space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    {(() => { const Icon = zoomData.cfg.icon || Activity; return <Icon className="h-5 w-5" style={{ color: zoomData.color }} />; })()}
+                    <h2 className="text-lg sm:text-xl font-semibold text-white">{zoomData.cfg.label}</h2>
+                    <Badge className="bg-white/10 text-white/60 border-white/20">{zoomData.cfg.unit}</Badge>
+                  </div>
+                  <button onClick={() => setZoomedMetric(null)} className="text-white/40 hover:text-white/70 transition"><X className="h-4 w-4 sm:h-5 sm:w-5" /></button>
+                </div>
+                <div className="flex justify-center">
+                  <svg width="600" height="280" className="w-full max-w-2xl" viewBox="0 0 600 280">
+                    {(() => {
+                      const vals = zoomData.vals;
+                      const dates = zoomData.dates;
+                      if (!vals || vals.length < 2) return null;
+                      const pad = { top: 20, right: 40, bottom: 40, left: 50 };
+                      const w = 600 - pad.left - pad.right;
+                      const h = 280 - pad.top - pad.bottom;
+                      const min = Math.min(...vals);
+                      const max = Math.max(...vals);
+                      const range = max - min || 1;
+
+                      const dots = vals.map((v, i) => ({
+                        x: pad.left + (i / (vals.length - 1)) * w,
+                        y: pad.top + h - ((v - min) / range) * h,
+                        v,
+                      }));
+
+                      const pts = dots.map(d => `${d.x.toFixed(1)},${d.y.toFixed(1)}`).join(" ");
+                      const gId = `zoom-fill-${zoomData.metric}`;
+
+                      // Y-axis gridlines
+                      const yTicks = 5;
+                      const yLines = Array.from({ length: yTicks }, (_, i) => {
+                        const val = min + (range / (yTicks - 1)) * i;
+                        const y = pad.top + h - ((val - min) / range) * h;
+                        return { val, y };
+                      });
+
+                      // X-axis labels
+                      const xLabels = dates && dates.length === vals.length ? dates : vals.map((_, i) => i);
+
+                      return (
+                        <>
+                          <defs>
+                            <linearGradient id={gId} x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="0%" stopColor={zoomData.color} stopOpacity="0.2" />
+                              <stop offset="100%" stopColor={zoomData.color} stopOpacity="0.02" />
+                            </linearGradient>
+                          </defs>
+                          {/* Gridlines */}
+                          {yLines.map((yl, i) => (
+                            <g key={i}>
+                              <line x1={pad.left} y1={yl.y} x2={pad.left + w} y2={yl.y} stroke="rgba(255,255,255,0.06)" strokeWidth="0.5" />
+                              <text x={pad.left - 6} y={yl.y + 3} textAnchor="end" fill="rgba(255,255,255,0.3)" fontSize="9">{yl.val.toFixed(1)}</text>
+                            </g>
+                          ))}
+                          {/* X-axis labels (show subset for readability) */}
+                          {(() => {
+                            const step = Math.max(1, Math.floor(xLabels.length / 6));
+                            return xLabels.map((lbl, i) => {
+                              if (i % step !== 0 && i !== xLabels.length - 1) return null;
+                              const x = pad.left + (i / (vals.length - 1)) * w;
+                              return <text key={i} x={x} y={pad.top + h + 18} textAnchor="middle" fill="rgba(255,255,255,0.3)" fontSize="8" className="truncate" style={{ maxWidth: 60 }}>{typeof lbl === "string" && lbl.length > 10 ? lbl.slice(0, 10) : lbl}</text>;
+                            });
+                          })()}
+                          {/* Area fill */}
+                          <polygon points={`${pad.left},${pad.top + h} ${pts} ${pad.left + w},${pad.top + h}`} fill={`url(#${gId})`} />
+                          {/* Line */}
+                          <polyline points={pts} fill="none" stroke={zoomData.color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                          {/* Data points */}
+                          {dots.map((d, i) => (
+                            <circle key={i} cx={d.x} cy={d.y} r={3} fill={zoomData.color} stroke="#fff" strokeWidth="1" />
+                          ))}
+                          {/* X-axis line */}
+                          <line x1={pad.left} y1={pad.top + h} x2={pad.left + w} y2={pad.top + h} stroke="rgba(255,255,255,0.15)" strokeWidth="1" />
+                          {/* Y-axis line */}
+                          <line x1={pad.left} y1={pad.top} x2={pad.left} y2={pad.top + h} stroke="rgba(255,255,255,0.15)" strokeWidth="1" />
+                        </>
+                      );
+                    })()}
+                  </svg>
+                </div>
+                <div className="grid grid-cols-4 gap-2 sm:gap-3 text-center pt-2 border-t border-white/10">
+                  <div><p className="text-[10px] sm:text-xs text-white/40">Min</p><p className="text-sm sm:text-base text-white">{Math.min(...zoomData.vals).toFixed(1)}</p></div>
+                  <div><p className="text-[10px] sm:text-xs text-white/40">Max</p><p className="text-sm sm:text-base text-white">{Math.max(...zoomData.vals).toFixed(1)}</p></div>
+                  <div><p className="text-[10px] sm:text-xs text-white/40">Mean</p><p className="text-sm sm:text-base text-white">{(zoomData.vals.reduce((a, b) => a + b, 0) / zoomData.vals.length).toFixed(1)}</p></div>
+                  <div><p className="text-[10px] sm:text-xs text-white/40">Range</p><p className="text-sm sm:text-base text-white">{(Math.max(...zoomData.vals) - Math.min(...zoomData.vals)).toFixed(1)}</p></div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        )}
+
       </main>
     </div>
   );
 }
+
+
