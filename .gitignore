@@ -5,13 +5,13 @@ __pycache__/
 .mp312/
 .vendor/
 web_uploads/
-frontend/node_modules/
-frontend/dist/
-public/
+website/frontend/node_modules/
+website/frontend/dist/
+website/public/
 .vercel_python_packages/
-api/.python-version
-api/pyproject.toml
-api/uv.lock
+website/api/.python-version
+website/api/pyproject.toml
+website/api/uv.lock
 
 models/pose_iter_440000.caffemodel
 .vercel

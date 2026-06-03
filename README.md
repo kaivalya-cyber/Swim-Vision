@@ -93,7 +93,7 @@ Install web dependencies for the Flask + React app:
 
 ```bash
 pip install -r requirements.txt
-cd frontend
+cd website/frontend
 npm install
 npm run build
 cd ..
@@ -102,7 +102,7 @@ python webapp.py
 
 Open the local URL printed by Flask. The site will:
 
-- render the homepage from the Vite build in `frontend/dist/`
+- render the homepage from the Vite build in `website/frontend/dist/`
 - upload clips through the Flask `/api/jobs` endpoint
 - run the existing `src/run_pipeline.py` workflow in a background thread
 - show live per-step progress and a polished results view
@@ -114,18 +114,18 @@ For full SwimVision processing (MediaPipe, OpenCV, Torch, etc.), install the hea
 pip install -r requirements.pipeline.txt
 ```
 
-On Vercel, `api/` serverless routes run in a lightweight mode and reject new long-running pipeline jobs by design.
+On Vercel, root `api/` adapter routes forward to `website/api/` lightweight handlers and reject new long-running pipeline jobs by design.
 
 #### Frontend development
 For UI iteration, run the frontend dev server separately:
 
 ```bash
-cd frontend
+cd website/frontend
 npm install
 npm run dev
 ```
 
-The frontend source lives in `frontend/src/`. Local/full backend behavior is served by [webapp.py](/Users/kaivalyasingh/Downloads/SwimVision/webapp.py), while Vercel uses lightweight `api/` functions for deployment-safe API responses.
+The frontend source lives in `website/frontend/src/`. Local/full backend behavior is served by [website/webapp.py](/Users/kaivalyasingh/Downloads/SwimVision/website/webapp.py) (with a root compatibility launcher at [webapp.py](/Users/kaivalyasingh/Downloads/SwimVision/webapp.py)), while Vercel uses lightweight adapter routes in root `api/` that forward to `website/api/`.
 
 ### Step-by-step quickstart
 If you want to run the steps manually, use these commands in order.
