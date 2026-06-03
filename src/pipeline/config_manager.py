@@ -34,6 +34,8 @@ PRESETS: Dict[str, Dict[str, Any]] = {
             "generate_report": True,
             "compute_joint_contributions": False,
             "analyze_entry": False,
+            "compute_glide_analysis": False,
+            "predict_performance": False,
         },
         "params": {
             "extraction_model_complexity": 0,
@@ -57,6 +59,8 @@ PRESETS: Dict[str, Dict[str, Any]] = {
             "generate_report": True,
             "compute_joint_contributions": True,
             "analyze_entry": True,
+            "compute_glide_analysis": True,
+            "predict_performance": True,
         },
         "params": {
             "extraction_model_complexity": 1,
@@ -80,6 +84,8 @@ PRESETS: Dict[str, Dict[str, Any]] = {
             "generate_report": True,
             "compute_joint_contributions": True,
             "analyze_entry": True,
+            "compute_glide_analysis": True,
+            "predict_performance": True,
         },
         "params": {
             "extraction_model_complexity": 2,

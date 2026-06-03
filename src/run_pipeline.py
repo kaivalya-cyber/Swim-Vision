@@ -490,6 +490,10 @@ def run_pipeline(
         base_steps += 1
     if config.is_enabled("analyze_entry"):
         base_steps += 1
+    if config.is_enabled("compute_glide_analysis"):
+        base_steps += 1
+    if config.is_enabled("predict_performance"):
+        base_steps += 1
     total_steps = base_steps
 
     LOGGER.info(
@@ -728,6 +732,43 @@ def run_pipeline(
             entry_command.extend(["--vel-accel", str(vel_accel_path)])
         _run_step(step_idx, total_steps, "Analyzing entry mechanics", entry_command, progress_callback=progress_callback)
 
+    # Optional: Underwater glide analysis
+    glide_analysis_path = RESULTS_DIR / f"{clip_id}_glide_analysis.json"
+    if config.is_enabled("compute_glide_analysis"):
+        step_idx += 1
+        glide_command = [
+            sys.executable,
+            "-m",
+            "src.metrics.glide_analysis",
+            "--keypoints",
+            str(keypoints_path),
+            "--angles",
+            str(angles_path),
+            "--boundaries",
+            str(boundaries_path),
+            "--output",
+            str(glide_analysis_path),
+        ]
+        _run_step(step_idx, total_steps, "Analyzing underwater glide", glide_command, progress_callback=progress_callback)
+
+    # Optional: Performance prediction
+    predictions_path = RESULTS_DIR / f"{clip_id}_predictions.json"
+    if config.is_enabled("predict_performance"):
+        step_idx += 1
+        pred_command = [
+            sys.executable,
+            "-m",
+            "src.analytics.performance_predictor",
+            "--deviations",
+            str(deviations_path),
+            "--output",
+            str(predictions_path),
+        ]
+        if symmetry_path.exists():
+            pred_command.extend(["--symmetry", str(symmetry_path)])
+        # Reaction time from report may not exist yet — skip
+        _run_step(step_idx, total_steps, "Predicting performance", pred_command, progress_callback=progress_callback)
+
     # Final step: Generate report
     step_idx += 1
     report_command = [
@@ -748,6 +789,10 @@ def run_pipeline(
         report_command.extend(["--vel_accel", str(vel_accel_path)])
     if symmetry_path.exists():
         report_command.extend(["--symmetry", str(symmetry_path)])
+    if predictions_path.exists():
+        report_command.extend(["--predictions", str(predictions_path)])
+    if entry_analysis_path.exists():
+        report_command.extend(["--entry_analysis", str(entry_analysis_path)])
     _run_step(step_idx, total_steps, "Generating report", report_command, progress_callback=progress_callback)
 
     outputs = {
@@ -762,6 +807,8 @@ def run_pipeline(
         "risk_json": risk_path,
         "joint_contributions_json": joint_contrib_path,
         "entry_analysis_json": entry_analysis_path,
+        "glide_analysis_json": glide_analysis_path,
+        "predictions_json": predictions_path,
         "annotated_video": annotated_path,
         "report_json": report_json_path,
         "report_pdf": report_pdf_path,

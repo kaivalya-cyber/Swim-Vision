@@ -135,7 +135,7 @@ def _build_summary(clip_id: str, outputs: dict[str, str]) -> dict[str, Any]:
             summary["analysis_mode"] = report.get("analysis_mode")
 
     # Load optional advanced analysis results
-    for key, json_path in [("velocity_acceleration", outputs.get("vel_accel_json")), ("dynamic_estimates", outputs.get("dynamic_json")), ("symmetry_analysis", outputs.get("symmetry_json")), ("injury_risk", outputs.get("risk_json")), ("joint_contributions", outputs.get("joint_contributions_json")), ("entry_analysis", outputs.get("entry_analysis_json"))]:
+    for key, json_path in [("velocity_acceleration", outputs.get("vel_accel_json")), ("dynamic_estimates", outputs.get("dynamic_json")), ("symmetry_analysis", outputs.get("symmetry_json")), ("injury_risk", outputs.get("risk_json")), ("joint_contributions", outputs.get("joint_contributions_json")), ("entry_analysis", outputs.get("entry_analysis_json")), ("glide_analysis", outputs.get("glide_analysis_json")), ("performance_prediction", outputs.get("predictions_json"))]:
         if json_path:
             try:
                 path = Path(json_path)
