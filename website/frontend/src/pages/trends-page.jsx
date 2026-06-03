@@ -30,6 +30,8 @@ import {
   Square,
   CheckSquare,
   Wrench,
+  FileText,
+  ShieldCheck,
 } from "lucide-react";
 import { Link } from "react-router-dom";
 import {
@@ -93,10 +95,10 @@ function parsePhaseMetrics(metrics, analysisMode) {
   }));
 }
 
-function Sparkline({ values, dates, color, metric, height = 40, width = 120, unit, goalValue, crosshairIdx, onCrosshairChange, onZoom }) {
+function Sparkline({ values, dates, color, metric, height = 40, width = 120, unit, goalValue, crosshairIdx, onCrosshairChange, onZoom, mean, stdDev }) {
   const [localHover, setLocalHover] = useState(null);
 
-  const { points, dotCoords, pathLength, gradientId, safeColor, h, padding, goalY } = useMemo(() => {
+  const { points, dotCoords, pathLength, gradientId, safeColor, h, padding, goalY, bandCoords } = useMemo(() => {
     if (!values || values.length < 2) return { points: "", pathLength: 0, dotCoords: [] };
     const vals = values.filter(v => v != null);
     if (vals.length < 2) return { points: "", pathLength: 0, dotCoords: [] };
@@ -110,9 +112,11 @@ function Sparkline({ values, dates, color, metric, height = 40, width = 120, uni
     const w = width - p * 2;
     const hgt = height - p * 2;
 
+    const scaleY = (v) => p + hgt - ((v - min) / range) * hgt;
+
     const dots = vals.map((v, i) => {
       const x = p + (i / (vals.length - 1)) * w;
-      const y = p + hgt - ((v - min) / range) * hgt;
+      const y = scaleY(v);
       return { x, y, v, idx: i };
     });
 
@@ -125,12 +129,23 @@ function Sparkline({ values, dates, color, metric, height = 40, width = 120, uni
 
     let gY = null;
     if (goalValue != null && !isNaN(goalValue)) {
-      gY = p + hgt - ((goalValue - min) / range) * hgt;
-      gY = Math.max(p, Math.min(p + hgt, gY));
+      gY = Math.max(p, Math.min(p + hgt, scaleY(goalValue)));
     }
 
-    return { points: pts, dotCoords: dots, pathLength: len, gradientId: gId, safeColor: c, h: hgt, padding: p, goalY: gY };
-  }, [values, color, metric, width, height, goalValue]);
+    // Compute ±1σ band polygon
+    let band = null;
+    if (mean != null && stdDev != null && stdDev > 0 && vals.length >= 3) {
+      const upperY = Math.max(p, Math.min(p + hgt, scaleY(mean + stdDev)));
+      const lowerY = Math.max(p, Math.min(p + hgt, scaleY(mean - stdDev)));
+      if (Math.abs(upperY - lowerY) > 2) {
+        const topPts = dots.map(d => `${d.x.toFixed(1)},${Math.max(p, Math.min(p + hgt, scaleY(mean + stdDev))).toFixed(1)}`).join(" ");
+        const botPts = [...dots].reverse().map(d => `${d.x.toFixed(1)},${Math.max(p, Math.min(p + hgt, scaleY(mean - stdDev))).toFixed(1)}`).join(" ");
+        band = `${topPts} ${botPts}`;
+      }
+    }
+
+    return { points: pts, dotCoords: dots, pathLength: len, gradientId: gId, safeColor: c, h: hgt, padding: p, goalY: gY, bandCoords: band };
+  }, [values, color, metric, width, height, goalValue, mean, stdDev]);
 
   const activeIdx = crosshairIdx != null ? crosshairIdx : localHover;
 
@@ -181,6 +196,10 @@ function Sparkline({ values, dates, color, metric, height = 40, width = 120, uni
             <stop offset="100%" stopColor={safeColor} stopOpacity="0.02" />
           </linearGradient>
         </defs>
+        {/* Statistical overlay band */}
+        {bandCoords && (
+          <polygon points={bandCoords} fill={safeColor} opacity="0.08" pointerEvents="none" />
+        )}
         {/* Crosshair vertical line */}
         {activeIdx != null && dotCoords[activeIdx] && (
           <line x1={dotCoords[activeIdx].x} y1={0} x2={dotCoords[activeIdx].x} y2={h + padding * 2} stroke="rgba(255,255,255,0.35)" strokeWidth="0.5" strokeDasharray="3 2" pointerEvents="none" />
@@ -215,7 +234,7 @@ function Sparkline({ values, dates, color, metric, height = 40, width = 120, uni
   );
 }
 
-function TrendBar({ value, maxValue, color, label, sparkValues, sparkMetric, sparkDates, unit, goalValue, crosshairIdx, onCrosshairChange, onZoom }) {
+function TrendBar({ value, maxValue, color, label, sparkValues, sparkMetric, sparkDates, unit, goalValue, crosshairIdx, onCrosshairChange, onZoom, mean, stdDev }) {
   const pct = maxValue > 0 ? Math.min((value / maxValue) * 100, 100) : 0;
   return (
     <div className="flex items-center gap-1 sm:gap-2 group">
@@ -223,7 +242,7 @@ function TrendBar({ value, maxValue, color, label, sparkValues, sparkMetric, spa
       <div className="flex-1 h-2 bg-white/10 rounded-full overflow-hidden">
         <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, backgroundColor: color }} />
       </div>
-      <Sparkline values={sparkValues} dates={sparkDates} color={color} metric={sparkMetric} unit={unit} goalValue={goalValue} crosshairIdx={crosshairIdx} onCrosshairChange={onCrosshairChange} />
+      <Sparkline values={sparkValues} dates={sparkDates} color={color} metric={sparkMetric} unit={unit} goalValue={goalValue} crosshairIdx={crosshairIdx} onCrosshairChange={onCrosshairChange} mean={mean} stdDev={stdDev} />
       <span className="w-10 sm:w-14 text-[10px] sm:text-xs text-white/70 text-right">{value.toFixed(1)}</span>
       {onZoom && (
         <button onClick={(e) => { e.stopPropagation(); onZoom(sparkMetric); }} className="opacity-0 group-hover:opacity-100 transition ml-0.5" title="Zoom chart">
@@ -315,6 +334,10 @@ export function TrendsPage() {
   const [newMetricName, setNewMetricName] = useState("");
   const [newMetricExpr, setNewMetricExpr] = useState("");
   const [newMetricUnit, setNewMetricUnit] = useState("");
+  const [showReportBuilder, setShowReportBuilder] = useState(false);
+  const [reportTemplate, setReportTemplate] = useState("coach");
+  const [reportMetricsChecked, setReportMetricsChecked] = useState(new Set());
+  const [reportOnlySelected, setReportOnlySelected] = useState(false);
 
   const [cbPalette, setCbPalette] = useState(() => {
     return typeof window !== "undefined" ? localStorage.getItem("swimvision-cb-palette") === "true" : false;
@@ -478,6 +501,36 @@ export function TrendsPage() {
     return { ...sparklineData, ...customMetricValues };
   }, [sparklineData, customMetricValues]);
 
+  // Statistical overlay bands: mean ± stdDev per metric
+  const metricStats = useMemo(() => {
+    const stats = {};
+    const allKeys = [...Object.keys(metricTrends), ...customMetrics.map((cm) => cm.name)];
+    allKeys.forEach((key) => {
+      const vals = (allSparklineData[key] || []).filter((v) => v != null && isFinite(v));
+      if (vals.length < 3) { stats[key] = { mean: null, stdDev: null, cv: null, count: vals.length }; return; }
+      const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
+      const variance = vals.reduce((sum, v) => sum + (v - mean) ** 2, 0) / vals.length;
+      const stdDev = Math.sqrt(variance);
+      const cv = mean !== 0 && Math.abs(mean) >= 0.001 ? (stdDev / Math.abs(mean)) * 100 : null;
+      stats[key] = { mean, stdDev, cv, count: vals.length };
+    });
+    return stats;
+  }, [allSparklineData, metricTrends, customMetrics]);
+
+  // Consistency scores
+  const consistencyScores = useMemo(() => {
+    const entries = Object.entries(metricStats).filter(([, s]) => s.cv != null);
+    if (!entries.length) return { overall: null, metrics: [] };
+    const avgCV = entries.reduce((sum, [, s]) => sum + s.cv, 0) / entries.length;
+    const overall = Math.max(0, Math.min(100, 100 - avgCV));
+    const metrics = entries.map(([key, s]) => {
+      const cfg = activeMetricConfig[key] || { label: key, unit: "" };
+      const consistency = s.cv < 10 ? "high" : s.cv < 20 ? "moderate" : "low";
+      return { key, label: cfg.label || key, cv: s.cv, consistency, mean: s.mean, stdDev: s.stdDev };
+    }).sort((a, b) => a.cv - b.cv);
+    return { overall, metrics };
+  }, [metricStats, activeMetricConfig]);
+
   function toggleSelectSession(idx) {
     setSelectedSessions((prev) => {
       const next = new Set(prev);
@@ -538,6 +591,137 @@ export function TrendsPage() {
     setCustomMetrics(updated);
     localStorage.setItem("swimvision-custom-metrics", JSON.stringify(updated));
   }
+
+  function handleGenerateReport() {
+    const cfg = activeMetricConfig[primaryMetric] || { label: primaryMetric, unit: "" };
+    const allMetricKeys = [...Object.keys(metricTrends), ...customMetrics.map((cm) => cm.name)];
+    const selectedKeys = reportMetricsChecked.size > 0
+      ? allMetricKeys.filter((k) => reportMetricsChecked.has(k))
+      : allMetricKeys;
+    const reportSessions = reportOnlySelected && selectedSessions.size > 0
+      ? [...selectedSessions].sort((a, b) => a - b).map((i) => sessions[i])
+      : sessions;
+
+    const lines = [];
+    const tpl = reportTemplate;
+
+    // Header
+    lines.push("═══════════════════════════════════");
+    lines.push(`  SwimVision — ${tpl === "coach" ? "Coach Summary" : tpl === "athlete" ? "Athlete Feedback" : "Research Export"}`);
+    lines.push("═══════════════════════════════════");
+    lines.push("");
+
+    // Common info
+    lines.push(`Primary Metric: ${cfg.label} (${cfg.unit})`);
+    lines.push(`Sessions: ${reportSessions.length} of ${sessions.length}`);
+    lines.push(`Date Range: ${summary.date_range?.first || "—"} — ${summary.date_range?.last || "—"}`);
+    lines.push(`Generated: ${new Date().toISOString().slice(0, 10)}`);
+    lines.push("");
+
+    if (tpl === "coach") {
+      lines.push("── Quick Summary ──");
+      lines.push(`Overall Severity: ${summary.overall_worst_severity}`);
+      lines.push(`Trend Direction: ${summary.primary_trend?.direction || "—"}`);
+      lines.push(`Mean ${cfg.label}: ${summary.primary_trend?.mean?.toFixed(1) || "—"} ${cfg.unit}`);
+      if (consistencyScores.overall != null) lines.push(`Consistency: ${consistencyScores.overall.toFixed(0)}%`);
+      lines.push("");
+      lines.push("── Key Metrics ──");
+      selectedKeys.forEach((key) => {
+        const mc = activeMetricConfig[key] || { label: key, unit: "" };
+        const trend = metricTrends[key];
+        const st = metricStats[key];
+        if (trend) {
+          lines.push(`  ${mc.label}: ${trend.mean?.toFixed(1) || "—"} ${mc.unit} (CV: ${st?.cv?.toFixed(1) || "—"}%)`);
+        }
+      });
+      customMetrics.forEach((cm) => {
+        if (selectedKeys.includes(cm.name)) {
+          const st = metricStats[cm.name];
+          lines.push(`  ${cm.name}: μ=${st?.mean?.toFixed(1) || "—"} (CV: ${st?.cv?.toFixed(1) || "—"}%)`);
+        }
+      });
+      lines.push("");
+      lines.push("── Recommendations ──");
+      lines.push(summary.summary_verdict || "Continue monitoring trends.");
+      if (consistencyScores.overall != null && consistencyScores.overall < 60) lines.push("→ Focus on technique consistency across sessions.");
+      if (outlierInfo.count > 0) lines.push(`→ Review ${outlierInfo.count} outlier session(s) for anomalies.`);
+      if (baselineIdx != null) lines.push(`→ Baseline set to session ${sessions[baselineIdx]?.session_id || "—"}.`);
+    } else if (tpl === "athlete") {
+      lines.push("── Your Progress ──");
+      const dir = summary.primary_trend?.direction;
+      if (dir === "improving") lines.push(`Great work! Your ${cfg.label.toLowerCase()} is trending upward.`);
+      else if (dir === "declining") lines.push(`Your ${cfg.label.toLowerCase()} has been declining — focus on consistency.`);
+      else lines.push(`Your ${cfg.label.toLowerCase()} is holding steady.`);
+      lines.push("");
+      lines.push("── Key Numbers ──");
+      selectedKeys.forEach((key) => {
+        const mc = activeMetricConfig[key] || { label: key, unit: "" };
+        const trend = metricTrends[key];
+        if (trend) lines.push(`  ${mc.label}: ${trend.mean?.toFixed(1) || "—"} ${mc.unit}`);
+      });
+      customMetrics.forEach((cm) => {
+        if (selectedKeys.includes(cm.name)) {
+          const st = metricStats[cm.name];
+          lines.push(`  ${cm.name}: ${st?.mean?.toFixed(1) || "—"} ${cm.unit || ""}`);
+        }
+      });
+      lines.push("");
+      lines.push("── Tips ──");
+      lines.push("• Review your session videos to spot technique changes.");
+      lines.push("• Consistency is key — aim for low variation between sessions.");
+      if (summary.primary_trend?.direction === "declining") lines.push("• Consider working with your coach on targeted drills.");
+    } else {
+      lines.push("── Statistical Summary ──");
+      lines.push(`Sessions analyzed: ${reportSessions.length}`);
+      lines.push(`Primary metric: ${cfg.label}`);
+      lines.push(`Mean: ${summary.primary_trend?.mean?.toFixed(2) || "—"} ${cfg.unit}`);
+      lines.push(`Std Dev: ${metricStats[primaryMetric]?.stdDev?.toFixed(2) || "—"}`);
+      lines.push(`CV: ${metricStats[primaryMetric]?.cv?.toFixed(1) || "—"}%`);
+      lines.push(`Range: ${summary.primary_trend?.min?.toFixed(2) || "—"} – ${summary.primary_trend?.max?.toFixed(2) || "—"}`);
+      lines.push(`Slope: ${summary.primary_trend?.slope?.toFixed(5) || "—"}`);
+      if (consistencyScores.overall != null) lines.push(`Overall Consistency: ${consistencyScores.overall.toFixed(0)}%`);
+      lines.push("");
+      lines.push("── All Metrics ──");
+      lines.push("Metric,Mean,StdDev,CV%,Min,Max");
+      selectedKeys.forEach((key) => {
+        const mc = activeMetricConfig[key] || { label: key, unit: "" };
+        const st = metricStats[key];
+        const vals = allSparklineData[key]?.filter((v) => v != null) || [];
+        const min = vals.length ? Math.min(...vals) : "—";
+        const max = vals.length ? Math.max(...vals) : "—";
+        if (st.mean != null) lines.push(`${mc.label},${st.mean.toFixed(2)},${st.stdDev.toFixed(2)},${st.cv?.toFixed(1) || "—"},${min},${max}`);
+      });
+      lines.push("");
+      lines.push("── Raw Session Data ──");
+      const allKeys = [...Object.keys(metricTrends), ...customMetrics.map((cm) => cm.name)];
+      lines.push(["Session", "Date", "Mode", ...allKeys].join(","));
+      reportSessions.forEach((s) => {
+        const row = [s.session_id, s.date || "", s.analysis_mode];
+        allKeys.forEach((k) => {
+          const cm = customMetrics.find((m) => m.name === k);
+          if (cm) { const val = evaluateExpression(cm.expression, s.metrics); row.push(val != null ? val.toFixed(3) : ""); }
+          else row.push(s.metrics?.[k] != null ? s.metrics[k].toFixed(3) : "");
+        });
+        lines.push(row.join(","));
+      });
+    }
+
+    lines.push("");
+    lines.push("═══════════════════════════════════");
+    lines.push(`Generated by SwimVision on ${new Date().toLocaleString()}`);
+
+    const text = lines.join("\n");
+    try { navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2000); }
+    catch { const textarea = document.createElement("textarea"); textarea.value = text; textarea.style.position = "fixed"; textarea.style.opacity = "0"; document.body.appendChild(textarea); textarea.select(); try { document.execCommand("copy"); } catch {} document.body.removeChild(textarea); setCopied(true); setTimeout(() => setCopied(false), 2000); }
+    setShowReportBuilder(false);
+  }
+
+  // Initialize report metrics check when opening modal
+  const openReportBuilder = useCallback(() => {
+    const allKeys = [...Object.keys(metricTrends), ...customMetrics.map((cm) => cm.name)];
+    setReportMetricsChecked(new Set(allKeys));
+    setShowReportBuilder(true);
+  }, [metricTrends, customMetrics]);
 
   return (
     <div className="min-h-screen pb-16 sm:pb-24">
@@ -625,6 +809,7 @@ export function TrendsPage() {
             <button onClick={() => { setCompareMode(!compareMode); if (compareMode) setComparison(null); }} className={`inline-flex items-center gap-1 text-[10px] sm:text-xs rounded-full px-2 sm:px-3 py-1 transition ${compareMode ? "bg-blue-500/20 text-blue-400 border border-blue-500/30" : "text-white/50 hover:text-white border border-white/10 hover:border-white/20"}`}><GitCompare className="h-3 w-3 sm:h-3.5 sm:w-3.5" /><span className="hidden sm:inline">Compare</span></button>
             <button onClick={() => setTheme(theme === "dark" ? "light" : "dark")} className="inline-flex items-center gap-1 text-[10px] sm:text-xs rounded-full px-2 sm:px-3 py-1 transition text-white/50 hover:text-white border border-white/10 hover:border-white/20 hide-mobile" title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}>{theme === "dark" ? <Sun className="h-3 w-3 sm:h-3.5 sm:w-3.5" /> : <Moon className="h-3 w-3 sm:h-3.5 sm:w-3.5" />}</button>
             <button onClick={toggleCb} className={`inline-flex items-center gap-1 text-[10px] sm:text-xs rounded-full px-2 sm:px-3 py-1 transition ${cbPalette ? "bg-purple-500/20 text-purple-400 border-purple-500/30" : "text-white/50 hover:text-white border border-white/10 hover:border-white/20"}`} title="Toggle color-blind friendly palette"><Eye className="h-3 w-3 sm:h-3.5 sm:w-3.5" /><span className="hidden sm:inline">{cbPalette ? "CB" : ""}</span></button>
+            <button onClick={openReportBuilder} disabled={!summary} className={`inline-flex items-center gap-1 text-[10px] sm:text-xs rounded-full px-2 sm:px-3 py-1 transition ${showReportBuilder ? "bg-indigo-500/20 text-indigo-400 border-indigo-500/30" : "text-white/50 hover:text-white border border-white/10 hover:border-white/20"} disabled:opacity-30`} title="Generate report"><FileText className="h-3 w-3 sm:h-3.5 sm:w-3.5" /><span className="hidden sm:inline">Report</span></button>
             <button onClick={() => setShowMetricBuilder(true)} className={`inline-flex items-center gap-1 text-[10px] sm:text-xs rounded-full px-2 sm:px-3 py-1 transition ${customMetrics.length > 0 ? "bg-blue-500/20 text-blue-400 border-blue-500/30" : "text-white/50 hover:text-white border border-white/10 hover:border-white/20"}`} title="Build custom metric"><Wrench className="h-3 w-3 sm:h-3.5 sm:w-3.5" /><span className="hidden sm:inline">{customMetrics.length > 0 ? customMetrics.length : "Build"}</span></button>
             {baselineIdx != null && sessions[baselineIdx] && (
               <button onClick={() => setBaselineIdx(null)} className="inline-flex items-center gap-1 text-[10px] sm:text-xs rounded-full px-2 sm:px-3 py-1 transition bg-emerald-500/15 text-emerald-400 border border-emerald-500/30" title="Clear baseline">
@@ -682,6 +867,33 @@ export function TrendsPage() {
               <Card><CardContent className="p-3 sm:p-5"><p className="text-[10px] sm:text-xs text-white/40 uppercase tracking-wider">Metric</p><select value={primaryMetric} onChange={(e) => setPrimaryMetric(e.target.value)} className="mt-1 bg-transparent text-white text-xs sm:text-sm border border-white/20 rounded px-1 sm:px-2 py-1 w-full">{Object.keys(activeMetricConfig).map((key) => (<option key={key} value={key} className="bg-gray-900">{activeMetricConfig[key].label}</option>))}</select></CardContent></Card>
             </div>
 
+            {/* Consistency Scores */}
+            {consistencyScores.metrics.length > 0 && (
+              <Card>
+                <CardContent className="p-4 sm:p-5">
+                  <div className="flex items-center gap-2 mb-3">
+                    <ShieldCheck className="h-3 w-3 sm:h-4 sm:w-4" style={{ color: consistencyScores.overall >= 80 ? "#34d399" : consistencyScores.overall >= 60 ? "#fbbf24" : "#f87171" }} />
+                    <h2 className="text-sm sm:text-base font-semibold text-white">Consistency Analysis</h2>
+                    <Badge className={consistencyScores.overall >= 80 ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30" : consistencyScores.overall >= 60 ? "bg-amber-500/15 text-amber-400 border-amber-500/30" : "bg-red-500/15 text-red-400 border-red-500/30"}>Overall: {consistencyScores.overall.toFixed(0)}%</Badge>
+                  </div>
+                  <div className="grid gap-2 grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
+                    {consistencyScores.metrics.map((m) => {
+                      const cvColor = m.consistency === "high" ? "text-emerald-400" : m.consistency === "moderate" ? "text-amber-400" : "text-red-400";
+                      const cvBg = m.consistency === "high" ? "bg-emerald-500/10 border-emerald-500/20" : m.consistency === "moderate" ? "bg-amber-500/10 border-amber-500/20" : "bg-red-500/10 border-red-500/20";
+                      return (
+                        <div key={m.key} className={`rounded-lg border ${cvBg} p-2 sm:p-3`}>
+                          <p className="text-[10px] sm:text-xs text-white/50 truncate">{m.label}</p>
+                          <p className={`text-sm sm:text-base font-semibold ${cvColor}`}>CV: {m.cv.toFixed(1)}%</p>
+                          <p className="text-[8px] sm:text-[10px] text-white/30">μ={m.mean?.toFixed(1)} ±{m.stdDev?.toFixed(1)}</p>
+                          <Badge className={`mt-1 text-[8px] sm:text-[10px] ${m.consistency === "high" ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30" : m.consistency === "moderate" ? "bg-amber-500/15 text-amber-400 border-amber-500/30" : "bg-red-500/15 text-red-400 border-red-500/30"}`}>{m.consistency}</Badge>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
             {/* Primary Trend */}
             {summary.primary_trend && (
               <Card><CardContent className="p-4 sm:p-6">
@@ -689,7 +901,7 @@ export function TrendsPage() {
                   <div className="flex items-center gap-2 sm:gap-3 group">
                     {(() => { const Icon = primaryCfg.icon || Activity; return <Icon className="h-4 w-4 sm:h-5 sm:w-5" style={{ color: primaryCfg.color }} />; })()}
                     <h2 className="text-base sm:text-lg font-semibold text-white">{primaryCfg.label}</h2>
-                    <Sparkline values={allSparklineData[primaryMetric]} dates={sparklineDates} color={primaryCfg.color} metric={primaryMetric} width={120} height={40} unit={primaryCfg.unit} goalValue={parsedGoal} crosshairIdx={crosshairIdx} onCrosshairChange={setCrosshairIdx} />
+                    <Sparkline values={allSparklineData[primaryMetric]} dates={sparklineDates} color={primaryCfg.color} metric={primaryMetric} width={120} height={40} unit={primaryCfg.unit} goalValue={parsedGoal} crosshairIdx={crosshairIdx} onCrosshairChange={setCrosshairIdx} mean={metricStats[primaryMetric]?.mean} stdDev={metricStats[primaryMetric]?.stdDev} />
                     <button onClick={() => setZoomedMetric(primaryMetric)} className="opacity-0 group-hover:opacity-100 transition ml-0.5" title="Zoom chart">
                       <Maximize2 className="h-3 w-3 sm:h-3.5 sm:w-3.5 text-white/40 hover:text-white/70" />
                     </button>
@@ -717,14 +929,14 @@ export function TrendsPage() {
               <div className="space-y-2 sm:space-y-3">
                 {Object.entries(metricTrends).map(([metric, trend]) => {
                   const cfg = activeMetricConfig[metric] || { label: metric, unit: "", color: "#60a5fa" };
-                  return (<TrendBar key={metric} value={trend.mean || 0} maxValue={Math.max(...Object.values(metricTrends).map((t) => t.mean || 0), 1)} color={cfg.color} label={`${cfg.label} (${cfg.unit})`} sparkValues={sparklineData[metric]} sparkDates={sparklineDates} sparkMetric={metric} unit={cfg.unit} goalValue={metric === primaryMetric ? parsedGoal : null} crosshairIdx={crosshairIdx} onCrosshairChange={setCrosshairIdx} onZoom={setZoomedMetric} />);
+                  return (<TrendBar key={metric} value={trend.mean || 0} maxValue={Math.max(...Object.values(metricTrends).map((t) => t.mean || 0), 1)} color={cfg.color} label={`${cfg.label} (${cfg.unit})`} sparkValues={sparklineData[metric]} sparkDates={sparklineDates} sparkMetric={metric} unit={cfg.unit} goalValue={metric === primaryMetric ? parsedGoal : null} crosshairIdx={crosshairIdx} onCrosshairChange={setCrosshairIdx} onZoom={setZoomedMetric} mean={metricStats[metric]?.mean} stdDev={metricStats[metric]?.stdDev} />);
                 })}
                 {customMetrics.map((cm) => {
                   const vals = customMetricValues[cm.name] || [];
                   const validVals = vals.filter((v) => v != null);
                   const mean = validVals.length > 0 ? validVals.reduce((a, b) => a + b, 0) / validVals.length : 0;
                   const allMax = Math.max(...Object.values(metricTrends).map((t) => t.mean || 0), ...Object.values(customMetricValues).map((vs) => Math.max(...(vs || []).filter((v) => v != null), 0)), 1);
-                  return (<TrendBar key={cm.name} value={mean} maxValue={allMax} color={cm.color} label={`${cm.name} (${cm.unit || "—"})`} sparkValues={vals} sparkDates={sparklineDates} sparkMetric={cm.name} unit={cm.unit || "—"} crosshairIdx={crosshairIdx} onCrosshairChange={setCrosshairIdx} onZoom={setZoomedMetric} />);
+                  return (<TrendBar key={cm.name} value={mean} maxValue={allMax} color={cm.color} label={`${cm.name} (${cm.unit || "—"})`} sparkValues={vals} sparkDates={sparklineDates} sparkMetric={cm.name} unit={cm.unit || "—"} crosshairIdx={crosshairIdx} onCrosshairChange={setCrosshairIdx} onZoom={setZoomedMetric} mean={metricStats[cm.name]?.mean} stdDev={metricStats[cm.name]?.stdDev} />);
                 })}
               </div>
             </CardContent></Card>
@@ -884,20 +1096,44 @@ export function TrendsPage() {
                   <Line
                     data={{
                       labels: zoomData.dates || zoomData.vals.map((_, i) => i),
-                      datasets: [{
-                        label: zoomData.cfg.label,
-                        data: zoomData.vals,
-                        borderColor: zoomData.color,
-                        backgroundColor: zoomData.color + "20",
-                        fill: true,
-                        tension: 0.3,
-                        pointRadius: 4,
-                        pointBackgroundColor: zoomData.color,
-                        pointBorderColor: "#fff",
-                        pointBorderWidth: 1.5,
-                        pointHoverRadius: 6,
-                        borderWidth: 2.5,
-                      }],
+                      datasets: [
+                        {
+                          label: "-1σ band",
+                          data: zoomData.vals.map((v) => (metricStats[zoomData.metric]?.mean ?? v) - (metricStats[zoomData.metric]?.stdDev ?? 0)),
+                          borderColor: "transparent",
+                          backgroundColor: zoomData.color + "15",
+                          fill: "+1",
+                          tension: 0.3,
+                          pointRadius: 0,
+                          pointHoverRadius: 0,
+                          borderWidth: 0,
+                        },
+                        {
+                          label: "+1σ",
+                          data: zoomData.vals.map((v) => (metricStats[zoomData.metric]?.mean ?? v) + (metricStats[zoomData.metric]?.stdDev ?? 0)),
+                          borderColor: "transparent",
+                          backgroundColor: "transparent",
+                          fill: false,
+                          tension: 0.3,
+                          pointRadius: 0,
+                          pointHoverRadius: 0,
+                          borderWidth: 0,
+                        },
+                        {
+                          label: zoomData.cfg.label,
+                          data: zoomData.vals,
+                          borderColor: zoomData.color,
+                          backgroundColor: zoomData.color + "20",
+                          fill: false,
+                          tension: 0.3,
+                          pointRadius: 4,
+                          pointBackgroundColor: zoomData.color,
+                          pointBorderColor: "#fff",
+                          pointBorderWidth: 1.5,
+                          pointHoverRadius: 6,
+                          borderWidth: 2.5,
+                        },
+                      ],
                     }}
                     options={{
                       responsive: true,
@@ -980,6 +1216,67 @@ export function TrendsPage() {
                     ))}
                   </div>
                 )}
+              </CardContent>
+            </Card>
+          </div>
+        )}
+
+        {/* Template-Based Report Builder Modal */}
+        {showReportBuilder && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 no-print" onClick={() => setShowReportBuilder(false)}>
+            <Card className="w-full max-w-lg max-h-[90vh] overflow-auto" onClick={e => e.stopPropagation()}>
+              <CardContent className="p-4 sm:p-5 space-y-3">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-base sm:text-lg font-semibold text-white flex items-center gap-2"><FileText className="h-4 w-4" />Report Builder</h2>
+                  <button onClick={() => setShowReportBuilder(false)} className="text-white/40 hover:text-white/70 transition"><X className="h-4 w-4" /></button>
+                </div>
+
+                {/* Template selector */}
+                <div>
+                  <p className="text-[10px] sm:text-xs text-white/40 mb-1.5">Template</p>
+                  <div className="flex gap-2">
+                    {[
+                      { id: "coach", label: "Coach Summary", desc: "Key metrics + recommendations" },
+                      { id: "athlete", label: "Athlete Feedback", desc: "Progress + tips" },
+                      { id: "research", label: "Research Export", desc: "Full stats + raw data" },
+                    ].map((t) => (
+                      <button key={t.id} onClick={() => setReportTemplate(t.id)} className={`flex-1 rounded-lg border p-2 sm:p-3 text-left transition ${reportTemplate === t.id ? "border-indigo-500/40 bg-indigo-500/10" : "border-white/10 hover:border-white/20 bg-white/[0.02]"}`}>
+                        <p className="text-[10px] sm:text-xs font-medium text-white">{t.label}</p>
+                        <p className="text-[8px] sm:text-[10px] text-white/40 mt-0.5">{t.desc}</p>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Metric selector */}
+                <div>
+                  <p className="text-[10px] sm:text-xs text-white/40 mb-1.5">Metrics to include</p>
+                  <div className="grid grid-cols-2 gap-1.5 max-h-32 overflow-y-auto">
+                    {[...Object.keys(metricTrends), ...customMetrics.map((cm) => cm.name)].map((key) => {
+                      const mc = activeMetricConfig[key] || { label: key, unit: "" };
+                      const checked = reportMetricsChecked.has(key);
+                      return (
+                        <button key={key} onClick={() => setReportMetricsChecked((prev) => { const next = new Set(prev); if (next.has(key)) next.delete(key); else next.add(key); return next; })} className={`flex items-center gap-1.5 rounded px-2 py-1.5 text-left text-[10px] sm:text-xs transition ${checked ? "bg-indigo-500/10 border border-indigo-500/20 text-white" : "bg-white/[0.02] border border-white/5 text-white/40"}`}>
+                          {checked ? <CheckSquare className="h-3 w-3 text-indigo-400 flex-shrink-0" /> : <Square className="h-3 w-3 flex-shrink-0" />}
+                          <span className="truncate">{mc.label || key}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Options */}
+                {selectedSessions.size > 0 && (
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={reportOnlySelected} onChange={(e) => setReportOnlySelected(e.target.checked)} className="rounded" />
+                    <span className="text-[10px] sm:text-xs text-white/60">Include only {selectedSessions.size} selected session(s)</span>
+                  </label>
+                )}
+
+                <div className="flex gap-2 pt-1">
+                  <button onClick={handleGenerateReport} className="flex-1 rounded-full bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 px-4 py-2 text-xs sm:text-sm transition hover:bg-indigo-500/30">Generate & Copy</button>
+                  <button onClick={() => setShowReportBuilder(false)} className="rounded-full text-white/50 hover:text-white border border-white/10 px-4 py-2 text-xs sm:text-sm transition">Cancel</button>
+                </div>
               </CardContent>
             </Card>
           </div>
