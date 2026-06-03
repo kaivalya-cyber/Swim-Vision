@@ -494,6 +494,8 @@ def run_pipeline(
         base_steps += 1
     if config.is_enabled("predict_performance"):
         base_steps += 1
+    if config.is_enabled("analyze_transitions"):
+        base_steps += 1
     total_steps = base_steps
 
     LOGGER.info(
@@ -751,6 +753,26 @@ def run_pipeline(
         ]
         _run_step(step_idx, total_steps, "Analyzing underwater glide", glide_command, progress_callback=progress_callback)
 
+    # Optional: Phase transition analysis
+    transitions_path = RESULTS_DIR / f"{clip_id}_transitions.json"
+    if config.is_enabled("analyze_transitions"):
+        step_idx += 1
+        trans_command = [
+            sys.executable,
+            "-m",
+            "src.metrics.phase_transitions",
+            "--keypoints",
+            str(keypoints_path),
+            "--boundaries",
+            str(boundaries_path),
+            "--output",
+            str(transitions_path),
+        ]
+        _run_step(step_idx, total_steps, "Analyzing phase transitions", trans_command, progress_callback=progress_callback)
+
+    # Stroke efficiency only runs in stroke mode (requires stroke metrics)
+    stroke_efficiency_path = RESULTS_DIR / f"{clip_id}_stroke_efficiency.json"
+
     # Optional: Performance prediction
     predictions_path = RESULTS_DIR / f"{clip_id}_predictions.json"
     if config.is_enabled("predict_performance"):
@@ -809,6 +831,8 @@ def run_pipeline(
         "entry_analysis_json": entry_analysis_path,
         "glide_analysis_json": glide_analysis_path,
         "predictions_json": predictions_path,
+        "transitions_json": transitions_path,
+        "stroke_efficiency_json": stroke_efficiency_path,
         "annotated_video": annotated_path,
         "report_json": report_json_path,
         "report_pdf": report_pdf_path,

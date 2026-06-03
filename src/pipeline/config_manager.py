@@ -36,6 +36,8 @@ PRESETS: Dict[str, Dict[str, Any]] = {
             "analyze_entry": False,
             "compute_glide_analysis": False,
             "predict_performance": False,
+            "analyze_transitions": False,
+            "compute_stroke_efficiency": False,
         },
         "params": {
             "extraction_model_complexity": 0,
@@ -61,6 +63,8 @@ PRESETS: Dict[str, Dict[str, Any]] = {
             "analyze_entry": True,
             "compute_glide_analysis": True,
             "predict_performance": True,
+            "analyze_transitions": True,
+            "compute_stroke_efficiency": True,
         },
         "params": {
             "extraction_model_complexity": 1,
@@ -86,6 +90,8 @@ PRESETS: Dict[str, Dict[str, Any]] = {
             "analyze_entry": True,
             "compute_glide_analysis": True,
             "predict_performance": True,
+            "analyze_transitions": True,
+            "compute_stroke_efficiency": True,
         },
         "params": {
             "extraction_model_complexity": 2,
