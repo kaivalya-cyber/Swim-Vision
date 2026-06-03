@@ -266,7 +266,38 @@ def _run_stroke_pipeline(
     ]
     _run_step(5, total_steps, "Computing stroke deviations", stroke_deviation_command, progress_callback=progress_callback)
 
-    # Step 6: Render annotated overlay
+    stroke_symmetry_path = RESULTS_DIR / f"{clip_id}_stroke_symmetry.json"
+    stroke_symmetry_command = [
+        sys.executable,
+        "-m",
+        "src.metrics.symmetry_analysis",
+        "--stroke-metrics",
+        str(stroke_metrics_path),
+        "--mode",
+        "stroke",
+        "--output",
+        str(stroke_symmetry_path),
+    ]
+    _run_step(6, total_steps, "Analyzing stroke symmetry", stroke_symmetry_command, progress_callback=progress_callback)
+
+    # Step 6b: Injury risk assessment
+    stroke_risk_path = RESULTS_DIR / f"{clip_id}_stroke_risk.json"
+    stroke_risk_command = [
+        sys.executable,
+        "-m",
+        "src.analytics.injury_risk",
+        "--stroke-metrics",
+        str(stroke_metrics_path),
+        "--symmetry",
+        str(stroke_symmetry_path),
+        "--mode",
+        "stroke",
+        "--output",
+        str(stroke_risk_path),
+    ]
+    _run_step(7, total_steps, "Assessing injury risk", stroke_risk_command, progress_callback=progress_callback)
+
+    # Step 7b: Render annotated overlay
     overlay_command = [
         sys.executable,
         "src/overlay.py",
@@ -285,9 +316,9 @@ def _run_stroke_pipeline(
     ]
     if crop_values:
         overlay_command.extend(["--crop", *crop_values])
-    _run_step(6, total_steps, "Rendering annotated overlay", overlay_command, progress_callback=progress_callback)
+    _run_step(8, total_steps, "Rendering annotated overlay", overlay_command, progress_callback=progress_callback)
 
-    # Step 7: Generate report
+    # Step 9: Generate report
     report_command = [
         sys.executable,
         "src/report.py",
@@ -308,7 +339,7 @@ def _run_stroke_pipeline(
         "--stroke_deviations",
         str(stroke_deviations_path),
     ]
-    _run_step(7, total_steps, "Generating report", report_command, progress_callback=progress_callback)
+    _run_step(9, total_steps, "Generating report", report_command, progress_callback=progress_callback)
 
     outputs = {
         "keypoints": keypoints_path,
@@ -317,6 +348,8 @@ def _run_stroke_pipeline(
         "stroke_boundaries_json": stroke_boundaries_path,
         "stroke_metrics_json": stroke_metrics_path,
         "stroke_deviations_json": stroke_deviations_path,
+        "stroke_symmetry_json": stroke_symmetry_path,
+        "stroke_risk_json": stroke_risk_path,
         "annotated_video": annotated_path,
         "report_json": report_json_path,
         "report_pdf": report_pdf_path,
@@ -409,7 +442,7 @@ def run_pipeline(
     report_pdf_path = RESULTS_DIR / f"{clip_id}_report.pdf"
 
     width, height = _resolve_dimensions(resolved_input, crop)
-    total_steps = 7 if analysis_mode == "stroke" else 8
+    total_steps = 9 if analysis_mode == "stroke" else 10
 
     _emit_progress(
         progress_callback,
@@ -505,6 +538,21 @@ def run_pipeline(
     ]
     _run_step(4, total_steps, "Computing velocity & acceleration", vel_accel_command, progress_callback=progress_callback)
 
+    # Step 4b: Dynamic estimates (COM velocity, head alignment, entry trajectory)
+    dynamic_path = RESULTS_DIR / f"{clip_id}_dynamic.json"
+    dynamic_command = [
+        sys.executable,
+        "-m",
+        "src.metrics.dynamic_estimates",
+        "--keypoints",
+        str(keypoints_path),
+        "--boundaries",
+        str(boundaries_path),
+        "--output",
+        str(dynamic_path),
+    ]
+    _run_step(5, total_steps, "Computing dynamic estimates", dynamic_command, progress_callback=progress_callback)
+
     deviation_command = [
         sys.executable,
         "-m",
@@ -517,9 +565,9 @@ def run_pipeline(
         str(deviations_path),
         "--all-phases",
     ]
-    _run_step(5, total_steps, "Computing deviations", deviation_command, progress_callback=progress_callback)
+    _run_step(6, total_steps, "Computing deviations", deviation_command, progress_callback=progress_callback)
 
-    # Step 5b: Symmetry analysis
+    # Step 6b: Symmetry analysis
     symmetry_path = RESULTS_DIR / f"{clip_id}_symmetry.json"
     symmetry_command = [
         sys.executable,
@@ -534,7 +582,24 @@ def run_pipeline(
         "--output",
         str(symmetry_path),
     ]
-    _run_step(6, total_steps, "Analyzing bilateral symmetry", symmetry_command, progress_callback=progress_callback)
+    _run_step(7, total_steps, "Analyzing bilateral symmetry", symmetry_command, progress_callback=progress_callback)
+
+    # Step 7b: Injury risk assessment
+    risk_path = RESULTS_DIR / f"{clip_id}_risk.json"
+    risk_command = [
+        sys.executable,
+        "-m",
+        "src.analytics.injury_risk",
+        "--deviations",
+        str(deviations_path),
+        "--symmetry",
+        str(symmetry_path),
+        "--mode",
+        "dive",
+        "--output",
+        str(risk_path),
+    ]
+    _run_step(8, total_steps, "Assessing injury risk", risk_command, progress_callback=progress_callback)
 
     overlay_command = [
         sys.executable,
@@ -550,7 +615,7 @@ def run_pipeline(
     ]
     if crop_values:
         overlay_command.extend(["--crop", *crop_values])
-    _run_step(7, total_steps, "Rendering annotated overlay", overlay_command, progress_callback=progress_callback)
+    _run_step(9, total_steps, "Rendering annotated overlay", overlay_command, progress_callback=progress_callback)
 
     report_command = [
         sys.executable,
@@ -570,7 +635,7 @@ def run_pipeline(
         "--symmetry",
         str(symmetry_path),
     ]
-    _run_step(8, total_steps, "Generating report", report_command, progress_callback=progress_callback)
+    _run_step(10, total_steps, "Generating report", report_command, progress_callback=progress_callback)
 
     outputs = {
         "keypoints": keypoints_path,
@@ -579,7 +644,9 @@ def run_pipeline(
         "boundaries_json": boundaries_path,
         "deviations_json": deviations_path,
         "vel_accel_json": vel_accel_path,
+        "dynamic_json": dynamic_path,
         "symmetry_json": symmetry_path,
+        "risk_json": risk_path,
         "annotated_video": annotated_path,
         "report_json": report_json_path,
         "report_pdf": report_pdf_path,

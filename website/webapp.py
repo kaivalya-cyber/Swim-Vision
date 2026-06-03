@@ -124,6 +124,17 @@ def _build_summary(clip_id: str, outputs: dict[str, str]) -> dict[str, Any]:
             summary["num_cycles"] = report.get("num_cycles")
             summary["analysis_mode"] = report.get("analysis_mode")
 
+    # Load optional advanced analysis results
+    for key, json_path in [("velocity_acceleration", outputs.get("vel_accel_json")), ("dynamic_estimates", outputs.get("dynamic_json")), ("symmetry_analysis", outputs.get("symmetry_json")), ("injury_risk", outputs.get("risk_json"))]:
+        if json_path:
+            try:
+                path = Path(json_path)
+                if path.exists():
+                    with open(path, "r", encoding="utf-8") as f:
+                        summary[key] = json.load(f)
+            except Exception:
+                pass
+
     summary["clip_id"] = clip_id
     return summary
 
