@@ -16,6 +16,16 @@ from werkzeug.utils import secure_filename
 
 from src.run_pipeline import run_pipeline
 from src.analytics.trend import analyze_trends
+from src.storage.session_manager import (
+    init_db,
+    record_session,
+    record_metrics,
+    record_risk,
+    record_symmetry,
+    upsert_swimmer,
+    get_swimmer_history,
+    get_all_swimmers,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -166,9 +176,42 @@ def _run_job(job_id: str) -> None:
             progress_callback=_progress_callback,
             analysis_mode=job.analysis_mode,
             stroke_start_frame=job.stroke_start_frame,
+            preset="standard",
         )
         outputs_payload = {name: str(path) for name, path in outputs.items()}
         summary = _build_summary(job.clip_id, outputs_payload)
+
+        # Persist completed session to SQLite
+        if job.swimmer_id:
+            try:
+                storage_conn = init_db()
+                record_session(
+                    storage_conn,
+                    session_id=job_id,
+                    clip_id=job.clip_id,
+                    swimmer_id=job.swimmer_id,
+                    analysis_mode=job.analysis_mode,
+                    original_filename=job.original_filename,
+                    overall_severity=summary.get("overall_severity"),
+                    reaction_time_ms=summary.get("reaction_time_ms"),
+                    num_cycles=summary.get("num_cycles", 0),
+                    status="completed",
+                )
+                # Record metrics
+                deviations_data = summary.get("deviations", summary)
+                record_metrics(storage_conn, job_id, deviations_data)
+                # Record symmetry if available
+                symmetry = summary.get("symmetry_analysis")
+                if symmetry:
+                    record_symmetry(storage_conn, job_id, symmetry)
+                # Record risk if available
+                risk = summary.get("injury_risk")
+                if risk:
+                    record_risk(storage_conn, job_id, risk)
+                storage_conn.close()
+            except Exception:
+                pass
+
         with _jobs_lock:
             active_job = _jobs[job_id]
             active_job.status = "completed"
@@ -276,6 +319,25 @@ def create_job() -> Any:
     )
     with _jobs_lock:
         _jobs[job_id] = job
+
+    # Persist to SQLite if swimmer_id is provided
+    if swimmer_id:
+        try:
+            storage_conn = init_db()
+            upsert_swimmer(storage_conn, swimmer_id, name=swimmer_id)
+            record_session(
+                storage_conn,
+                session_id=job_id,
+                clip_id=clip_id,
+                swimmer_id=swimmer_id,
+                analysis_mode=analysis_mode,
+                original_filename=uploaded_file.filename,
+                crop=crop,
+                status="queued",
+            )
+            storage_conn.close()
+        except Exception:
+            pass
 
     worker = threading.Thread(target=_run_job, args=(job_id,), daemon=True)
     worker.start()

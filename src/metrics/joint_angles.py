@@ -130,6 +130,64 @@ def _scale_point(point: np.ndarray, aspect_ratio: float) -> np.ndarray:
     return scaled_point
 
 
+def hip_rotation_angle(
+    left_shoulder: np.ndarray,
+    right_shoulder: np.ndarray,
+    left_hip: np.ndarray,
+    right_hip: np.ndarray,
+) -> float:
+    """Compute hip rotation angle in the transverse plane.
+
+    Measures pelvis rotation by comparing shoulder line to hip line.
+    Higher values indicate more torso rotation during the movement.
+
+    Args:
+        left_shoulder: Left shoulder point.
+        right_shoulder: Right shoulder point.
+        left_hip: Left hip point.
+        right_hip: Right hip point.
+
+    Returns:
+        Hip rotation angle in degrees.
+    """
+    shoulder_vec = np.asarray(right_shoulder, dtype=np.float32) - np.asarray(left_shoulder, dtype=np.float32)
+    hip_vec = np.asarray(right_hip, dtype=np.float32) - np.asarray(left_hip, dtype=np.float32)
+
+    norm_shoulder = np.linalg.norm(shoulder_vec)
+    norm_hip = np.linalg.norm(hip_vec)
+    if norm_shoulder < 1e-6 or norm_hip < 1e-6:
+        return 0.0
+
+    cos_angle = np.clip(np.dot(shoulder_vec, hip_vec) / (norm_shoulder * norm_hip), -1.0, 1.0)
+    return float(np.degrees(np.arccos(cos_angle)))
+
+
+def shoulder_hip_separation(
+    shoulder_mid: np.ndarray,
+    hip_mid: np.ndarray,
+    vertical: np.ndarray,
+) -> float:
+    """Compute shoulder-to-hip separation angle from vertical.
+
+    Measures how far the upper body leans relative to the lower body.
+    Important for assessing kinetic chain efficiency in swim starts.
+
+    Args:
+        shoulder_mid: Shoulder midpoint.
+        hip_mid: Hip midpoint.
+        vertical: Vertical reference vector (typically [0, -1]).
+
+    Returns:
+        Separation angle in degrees.
+    """
+    torso_vec = np.asarray(shoulder_mid, dtype=np.float32) - np.asarray(hip_mid, dtype=np.float32)
+    norm_torso = np.linalg.norm(torso_vec)
+    if norm_torso < 1e-6:
+        return 0.0
+    cos_angle = np.clip(np.dot(torso_vec, vertical) / norm_torso, -1.0, 1.0)
+    return float(np.degrees(np.arccos(cos_angle)))
+
+
 def compute_all_angles(keypoints: np.ndarray, width: int | None = None, height: int | None = None) -> pd.DataFrame:
     """Compute all requested SwimVision joint-angle metrics per frame.
 
@@ -173,6 +231,8 @@ def compute_all_angles(keypoints: np.ndarray, width: int | None = None, height: 
                     "elbow_extension": np.nan,
                     "elbow_lock_angle": np.nan,
                     "shoulder_hip_alignment": np.nan,
+                    "hip_rotation": np.nan,
+                    "shoulder_hip_separation": np.nan,
                 }
             )
             continue
@@ -200,6 +260,10 @@ def compute_all_angles(keypoints: np.ndarray, width: int | None = None, height: 
         hip_to_shoulder = shoulder_midpoint - hip_midpoint
         ankle_to_hip = ankle_midpoint - hip_midpoint
 
+        # New alignment metrics
+        hip_rotation = hip_rotation_angle(left_shoulder, right_shoulder, left_hip, right_hip)
+        separation_angle = shoulder_hip_separation(shoulder_midpoint, hip_midpoint, vertical_axis)
+
         body_linearity_value = body_linearity(shoulder_midpoint, hip_midpoint, ankle_midpoint)
         left_elbow_angle = angle_between(left_shoulder, left_elbow, left_wrist)
         right_elbow_angle = angle_between(right_shoulder, right_elbow, right_wrist)
@@ -224,6 +288,8 @@ def compute_all_angles(keypoints: np.ndarray, width: int | None = None, height: 
             "elbow_extension": elbow_extension,
             "elbow_lock_angle": elbow_extension,
             "shoulder_hip_alignment": angle_between(hip_to_shoulder, np.zeros(2, dtype=np.float32), ankle_to_hip),
+            "hip_rotation": hip_rotation,
+            "shoulder_hip_separation": separation_angle,
         }
         records.append(record)
 
@@ -243,6 +309,8 @@ def compute_all_angles(keypoints: np.ndarray, width: int | None = None, height: 
             "streamline_angle",
             "elbow_extension",
             "elbow_lock_angle",
+            "hip_rotation",
+            "shoulder_hip_separation",
         ]
     ]
 
@@ -302,6 +370,7 @@ def main() -> int:
             LOGGER.error("Failed to write angles CSV to %s: %s", output_path, exc)
             return 1
         LOGGER.info("Saved angle metrics to %s", output_path)
+        LOGGER.info("All angle computation modules initialized.")
     else:
         print(angles_df.head().to_string())
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 from pathlib import Path
 import subprocess
@@ -12,8 +13,13 @@ import sys
 import time
 from typing import Callable
 
-import numpy as np
+from src.pipeline.config_manager import PipelineConfig
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+)
+LOGGER = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
@@ -145,16 +151,21 @@ def _run_stroke_pipeline(
     height: int,
     total_steps: int,
     stroke_type: str = "auto",
+    config: PipelineConfig | None = None,
 ) -> dict[str, Path]:
     """Run the stroke-analysis pipeline variant.
 
     Shares the initial extraction and angle computation steps with the dive
     pipeline, then runs stroke-cycle detection, stroke metrics, and an
-    extended report generation pass.
+    extended report generation pass.  Respects feature flags from *config*.
 
     Args:
         stroke_type: Stroke type override (auto, freestyle, butterfly, backstroke).
+        config: Optional pipeline configuration for feature gating.
     """
+
+    if config is None:
+        config = PipelineConfig(preset="standard", analysis_mode="stroke")
 
     stroke_boundaries_path = RESULTS_DIR / f"{clip_id}_stroke_boundaries.json"
     stroke_metrics_path = RESULTS_DIR / f"{clip_id}_stroke_metrics.json"
@@ -266,59 +277,67 @@ def _run_stroke_pipeline(
     ]
     _run_step(5, total_steps, "Computing stroke deviations", stroke_deviation_command, progress_callback=progress_callback)
 
+    step_idx = 5
     stroke_symmetry_path = RESULTS_DIR / f"{clip_id}_stroke_symmetry.json"
-    stroke_symmetry_command = [
-        sys.executable,
-        "-m",
-        "src.metrics.symmetry_analysis",
-        "--stroke-metrics",
-        str(stroke_metrics_path),
-        "--mode",
-        "stroke",
-        "--output",
-        str(stroke_symmetry_path),
-    ]
-    _run_step(6, total_steps, "Analyzing stroke symmetry", stroke_symmetry_command, progress_callback=progress_callback)
-
-    # Step 6b: Injury risk assessment
     stroke_risk_path = RESULTS_DIR / f"{clip_id}_stroke_risk.json"
-    stroke_risk_command = [
-        sys.executable,
-        "-m",
-        "src.analytics.injury_risk",
-        "--stroke-metrics",
-        str(stroke_metrics_path),
-        "--symmetry",
-        str(stroke_symmetry_path),
-        "--mode",
-        "stroke",
-        "--output",
-        str(stroke_risk_path),
-    ]
-    _run_step(7, total_steps, "Assessing injury risk", stroke_risk_command, progress_callback=progress_callback)
 
-    # Step 7b: Render annotated overlay
-    overlay_command = [
-        sys.executable,
-        "src/overlay.py",
-        "--input",
-        str(resolved_input),
-        "--keypoints",
-        str(keypoints_path),
-        "--angles",
-        str(angles_path),
-        "--output",
-        str(annotated_path),
-        "--analysis_mode",
-        "stroke",
-        "--stroke_boundaries",
-        str(stroke_boundaries_path),
-    ]
-    if crop_values:
-        overlay_command.extend(["--crop", *crop_values])
-    _run_step(8, total_steps, "Rendering annotated overlay", overlay_command, progress_callback=progress_callback)
+    if config.is_enabled("analyze_symmetry"):
+        step_idx += 1
+        stroke_symmetry_command = [
+            sys.executable,
+            "-m",
+            "src.metrics.symmetry_analysis",
+            "--stroke-metrics",
+            str(stroke_metrics_path),
+            "--mode",
+            "stroke",
+            "--output",
+            str(stroke_symmetry_path),
+        ]
+        _run_step(step_idx, total_steps, "Analyzing stroke symmetry", stroke_symmetry_command, progress_callback=progress_callback)
 
-    # Step 9: Generate report
+    if config.is_enabled("assess_injury_risk"):
+        step_idx += 1
+        stroke_symm_arg = str(stroke_symmetry_path) if stroke_symmetry_path.exists() else ""
+        stroke_risk_command = [
+            sys.executable,
+            "-m",
+            "src.analytics.injury_risk",
+            "--stroke-metrics",
+            str(stroke_metrics_path),
+            "--mode",
+            "stroke",
+            "--output",
+            str(stroke_risk_path),
+        ]
+        if stroke_symm_arg:
+            stroke_risk_command.extend(["--symmetry", stroke_symm_arg])
+        _run_step(step_idx, total_steps, "Assessing injury risk", stroke_risk_command, progress_callback=progress_callback)
+
+    if config.is_enabled("render_overlay"):
+        step_idx += 1
+        overlay_command = [
+            sys.executable,
+            "src/overlay.py",
+            "--input",
+            str(resolved_input),
+            "--keypoints",
+            str(keypoints_path),
+            "--angles",
+            str(angles_path),
+            "--output",
+            str(annotated_path),
+            "--analysis_mode",
+            "stroke",
+            "--stroke_boundaries",
+            str(stroke_boundaries_path),
+        ]
+        if crop_values:
+            overlay_command.extend(["--crop", *crop_values])
+        _run_step(step_idx, total_steps, "Rendering annotated overlay", overlay_command, progress_callback=progress_callback)
+
+    # Final step: Generate report
+    step_idx += 1
     report_command = [
         sys.executable,
         "src/report.py",
@@ -339,7 +358,7 @@ def _run_stroke_pipeline(
         "--stroke_deviations",
         str(stroke_deviations_path),
     ]
-    _run_step(9, total_steps, "Generating report", report_command, progress_callback=progress_callback)
+    _run_step(step_idx, total_steps, "Generating report", report_command, progress_callback=progress_callback)
 
     outputs = {
         "keypoints": keypoints_path,
@@ -399,6 +418,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="auto",
         help="Stroke type override (default: auto-detect).",
     )
+    parser.add_argument(
+        "--preset",
+        choices=["quick", "standard", "research"],
+        default="standard",
+        help="Pipeline preset (default: standard).",
+    )
     return parser
 
 
@@ -410,6 +435,7 @@ def run_pipeline(
     analysis_mode: str = "dive",
     stroke_start_frame: int = 0,
     stroke_type: str = "auto",
+    preset: str = "standard",
 ) -> dict[str, Path]:
     """Run the full SwimVision pipeline and return the generated artifact paths.
 
@@ -442,7 +468,32 @@ def run_pipeline(
     report_pdf_path = RESULTS_DIR / f"{clip_id}_report.pdf"
 
     width, height = _resolve_dimensions(resolved_input, crop)
-    total_steps = 9 if analysis_mode == "stroke" else 10
+
+    config = PipelineConfig(preset=preset, analysis_mode=analysis_mode)
+
+    # Compute total steps dynamically based on enabled features
+    base_steps = 5  # extract + phases/ingest + angles + deviations + report
+    if analysis_mode == "stroke":
+        base_steps += 1  # stroke detection
+    else:
+        if config.is_enabled("compute_velocity_acceleration"):
+            base_steps += 1
+        if config.is_enabled("compute_dynamic_estimates"):
+            base_steps += 1
+    if config.is_enabled("analyze_symmetry"):
+        base_steps += 1
+    if config.is_enabled("assess_injury_risk"):
+        base_steps += 1
+    if config.is_enabled("render_overlay"):
+        base_steps += 1
+    total_steps = base_steps
+
+    LOGGER.info(
+        "Using pipeline preset: %s (complexity=%s, %d steps)",
+        preset,
+        config.get_param("extraction_model_complexity", "default"),
+        total_steps,
+    )
 
     _emit_progress(
         progress_callback,
@@ -476,10 +527,13 @@ def run_pipeline(
             height=height,
             total_steps=total_steps,
             stroke_type=stroke_type,
+            config=config,
         )
 
     # --- Dive analysis pipeline (default) ---
+    step_idx = 0
 
+    step_idx += 1
     extract_command = [
         sys.executable,
         "src/extract.py",
@@ -492,8 +546,9 @@ def run_pipeline(
     ]
     if crop_values:
         extract_command.extend(["--crop", *crop_values])
-    _run_step(1, total_steps, "Extracting keypoints", extract_command, progress_callback=progress_callback)
+    _run_step(step_idx, total_steps, "Extracting keypoints", extract_command, progress_callback=progress_callback)
 
+    step_idx += 1
     ingest_command = [
         sys.executable,
         "src/ingest.py",
@@ -505,8 +560,9 @@ def run_pipeline(
         "--output",
         str(boundaries_path),
     ]
-    _run_step(2, total_steps, "Detecting phase boundaries", ingest_command, progress_callback=progress_callback)
+    _run_step(step_idx, total_steps, "Detecting phase boundaries", ingest_command, progress_callback=progress_callback)
 
+    step_idx += 1
     joint_command = [
         sys.executable,
         "src/metrics/joint_angles.py",
@@ -521,38 +577,43 @@ def run_pipeline(
         "--height",
         str(height),
     ]
-    _run_step(3, total_steps, "Computing joint angles", joint_command, progress_callback=progress_callback)
+    _run_step(step_idx, total_steps, "Computing joint angles", joint_command, progress_callback=progress_callback)
 
-    # Step 3b: Compute velocity & acceleration profiles
+    # Optional: Compute velocity & acceleration profiles
     vel_accel_path = RESULTS_DIR / f"{clip_id}_vel_accel.json"
-    vel_accel_command = [
-        sys.executable,
-        "-m",
-        "src.metrics.velocity_acceleration",
-        "--angles",
-        str(angles_path),
-        "--boundaries",
-        str(boundaries_path),
-        "--output",
-        str(vel_accel_path),
-    ]
-    _run_step(4, total_steps, "Computing velocity & acceleration", vel_accel_command, progress_callback=progress_callback)
+    if config.is_enabled("compute_velocity_acceleration"):
+        step_idx += 1
+        vel_accel_command = [
+            sys.executable,
+            "-m",
+            "src.metrics.velocity_acceleration",
+            "--angles",
+            str(angles_path),
+            "--boundaries",
+            str(boundaries_path),
+            "--output",
+            str(vel_accel_path),
+        ]
+        _run_step(step_idx, total_steps, "Computing velocity & acceleration", vel_accel_command, progress_callback=progress_callback)
 
-    # Step 4b: Dynamic estimates (COM velocity, head alignment, entry trajectory)
+    # Optional: Dynamic estimates (COM velocity, head alignment, entry trajectory)
     dynamic_path = RESULTS_DIR / f"{clip_id}_dynamic.json"
-    dynamic_command = [
-        sys.executable,
-        "-m",
-        "src.metrics.dynamic_estimates",
-        "--keypoints",
-        str(keypoints_path),
-        "--boundaries",
-        str(boundaries_path),
-        "--output",
-        str(dynamic_path),
-    ]
-    _run_step(5, total_steps, "Computing dynamic estimates", dynamic_command, progress_callback=progress_callback)
+    if config.is_enabled("compute_dynamic_estimates"):
+        step_idx += 1
+        dynamic_command = [
+            sys.executable,
+            "-m",
+            "src.metrics.dynamic_estimates",
+            "--keypoints",
+            str(keypoints_path),
+            "--boundaries",
+            str(boundaries_path),
+            "--output",
+            str(dynamic_path),
+        ]
+        _run_step(step_idx, total_steps, "Computing dynamic estimates", dynamic_command, progress_callback=progress_callback)
 
+    step_idx += 1
     deviation_command = [
         sys.executable,
         "-m",
@@ -565,58 +626,66 @@ def run_pipeline(
         str(deviations_path),
         "--all-phases",
     ]
-    _run_step(6, total_steps, "Computing deviations", deviation_command, progress_callback=progress_callback)
+    _run_step(step_idx, total_steps, "Computing deviations", deviation_command, progress_callback=progress_callback)
 
-    # Step 6b: Symmetry analysis
+    # Optional: Symmetry analysis
     symmetry_path = RESULTS_DIR / f"{clip_id}_symmetry.json"
-    symmetry_command = [
-        sys.executable,
-        "-m",
-        "src.metrics.symmetry_analysis",
-        "--angles",
-        str(angles_path),
-        "--boundaries",
-        str(boundaries_path),
-        "--mode",
-        "dive",
-        "--output",
-        str(symmetry_path),
-    ]
-    _run_step(7, total_steps, "Analyzing bilateral symmetry", symmetry_command, progress_callback=progress_callback)
+    if config.is_enabled("analyze_symmetry"):
+        step_idx += 1
+        symmetry_command = [
+            sys.executable,
+            "-m",
+            "src.metrics.symmetry_analysis",
+            "--angles",
+            str(angles_path),
+            "--boundaries",
+            str(boundaries_path),
+            "--mode",
+            "dive",
+            "--output",
+            str(symmetry_path),
+        ]
+        _run_step(step_idx, total_steps, "Analyzing bilateral symmetry", symmetry_command, progress_callback=progress_callback)
 
-    # Step 7b: Injury risk assessment
+    # Optional: Injury risk assessment
     risk_path = RESULTS_DIR / f"{clip_id}_risk.json"
-    risk_command = [
-        sys.executable,
-        "-m",
-        "src.analytics.injury_risk",
-        "--deviations",
-        str(deviations_path),
-        "--symmetry",
-        str(symmetry_path),
-        "--mode",
-        "dive",
-        "--output",
-        str(risk_path),
-    ]
-    _run_step(8, total_steps, "Assessing injury risk", risk_command, progress_callback=progress_callback)
+    if config.is_enabled("assess_injury_risk"):
+        step_idx += 1
+        risk_command = [
+            sys.executable,
+            "-m",
+            "src.analytics.injury_risk",
+            "--deviations",
+            str(deviations_path),
+            "--mode",
+            "dive",
+            "--output",
+            str(risk_path),
+        ]
+        if symmetry_path.exists():
+            risk_command.extend(["--symmetry", str(symmetry_path)])
+        _run_step(step_idx, total_steps, "Assessing injury risk", risk_command, progress_callback=progress_callback)
 
-    overlay_command = [
-        sys.executable,
-        "src/overlay.py",
-        "--input",
-        str(resolved_input),
-        "--keypoints",
-        str(keypoints_path),
-        "--angles",
-        str(angles_path),
-        "--output",
-        str(annotated_path),
-    ]
-    if crop_values:
-        overlay_command.extend(["--crop", *crop_values])
-    _run_step(9, total_steps, "Rendering annotated overlay", overlay_command, progress_callback=progress_callback)
+    if config.is_enabled("render_overlay"):
+        step_idx += 1
+        overlay_command = [
+            sys.executable,
+            "src/overlay.py",
+            "--input",
+            str(resolved_input),
+            "--keypoints",
+            str(keypoints_path),
+            "--angles",
+            str(angles_path),
+            "--output",
+            str(annotated_path),
+        ]
+        if crop_values:
+            overlay_command.extend(["--crop", *crop_values])
+        _run_step(step_idx, total_steps, "Rendering annotated overlay", overlay_command, progress_callback=progress_callback)
 
+    # Final step: Generate report
+    step_idx += 1
     report_command = [
         sys.executable,
         "src/report.py",
@@ -630,12 +699,12 @@ def run_pipeline(
         str(annotated_path),
         "--output",
         str(RESULTS_DIR),
-        "--vel_accel",
-        str(vel_accel_path),
-        "--symmetry",
-        str(symmetry_path),
     ]
-    _run_step(10, total_steps, "Generating report", report_command, progress_callback=progress_callback)
+    if vel_accel_path.exists():
+        report_command.extend(["--vel_accel", str(vel_accel_path)])
+    if symmetry_path.exists():
+        report_command.extend(["--symmetry", str(symmetry_path)])
+    _run_step(step_idx, total_steps, "Generating report", report_command, progress_callback=progress_callback)
 
     outputs = {
         "keypoints": keypoints_path,
@@ -679,6 +748,7 @@ def main() -> int:
             analysis_mode=args.analysis_mode,
             stroke_start_frame=args.stroke_start_frame,
             stroke_type=args.stroke_type,
+            preset=args.preset,
         )
     except FileNotFoundError as exc:
         print(str(exc))
