@@ -32,6 +32,8 @@ PRESETS: Dict[str, Dict[str, Any]] = {
             "assess_injury_risk": False,
             "render_overlay": False,
             "generate_report": True,
+            "compute_joint_contributions": False,
+            "analyze_entry": False,
         },
         "params": {
             "extraction_model_complexity": 0,
@@ -53,6 +55,8 @@ PRESETS: Dict[str, Dict[str, Any]] = {
             "assess_injury_risk": True,
             "render_overlay": True,
             "generate_report": True,
+            "compute_joint_contributions": True,
+            "analyze_entry": True,
         },
         "params": {
             "extraction_model_complexity": 1,
@@ -74,6 +78,8 @@ PRESETS: Dict[str, Dict[str, Any]] = {
             "assess_injury_risk": True,
             "render_overlay": True,
             "generate_report": True,
+            "compute_joint_contributions": True,
+            "analyze_entry": True,
         },
         "params": {
             "extraction_model_complexity": 2,

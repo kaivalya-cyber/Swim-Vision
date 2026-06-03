@@ -380,6 +380,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reaction_time", type=float, help="Optional reaction time in milliseconds.")
     parser.add_argument("--vel_accel", help="Optional velocity/acceleration profile JSON.")
     parser.add_argument("--symmetry", help="Optional symmetry analysis JSON.")
+    parser.add_argument("--joint_contributions", help="Optional joint contributions JSON.")
+    parser.add_argument("--entry_analysis", help="Optional entry analysis JSON.")
     parser.add_argument(
         "--analysis_mode",
         choices=["dive", "stroke"],
@@ -473,6 +475,18 @@ def main() -> int:
         try:
             with open(args.symmetry, "r", encoding="utf-8") as f:
                 deviations["symmetry_analysis"] = json.load(f)
+        except Exception:
+            pass
+    if args.joint_contributions:
+        try:
+            with open(args.joint_contributions, "r", encoding="utf-8") as f:
+                deviations["joint_contributions"] = json.load(f)
+        except Exception:
+            pass
+    if args.entry_analysis:
+        try:
+            with open(args.entry_analysis, "r", encoding="utf-8") as f:
+                deviations["entry_analysis"] = json.load(f)
         except Exception:
             pass
 

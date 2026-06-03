@@ -486,6 +486,10 @@ def run_pipeline(
         base_steps += 1
     if config.is_enabled("render_overlay"):
         base_steps += 1
+    if config.is_enabled("compute_joint_contributions"):
+        base_steps += 1
+    if config.is_enabled("analyze_entry"):
+        base_steps += 1
     total_steps = base_steps
 
     LOGGER.info(
@@ -684,6 +688,46 @@ def run_pipeline(
             overlay_command.extend(["--crop", *crop_values])
         _run_step(step_idx, total_steps, "Rendering annotated overlay", overlay_command, progress_callback=progress_callback)
 
+    # Optional: Joint contributions analysis
+    joint_contrib_path = RESULTS_DIR / f"{clip_id}_joint_contributions.json"
+    if config.is_enabled("compute_joint_contributions"):
+        step_idx += 1
+        jc_command = [
+            sys.executable,
+            "-m",
+            "src.metrics.joint_contributions",
+            "--angles",
+            str(angles_path),
+            "--output",
+            str(joint_contrib_path),
+        ]
+        if vel_accel_path.exists():
+            jc_command.extend(["--vel-accel", str(vel_accel_path)])
+        _run_step(step_idx, total_steps, "Analyzing joint contributions", jc_command, progress_callback=progress_callback)
+
+    # Optional: Entry analysis
+    entry_analysis_path = RESULTS_DIR / f"{clip_id}_entry_analysis.json"
+    if config.is_enabled("analyze_entry"):
+        step_idx += 1
+        entry_command = [
+            sys.executable,
+            "-m",
+            "src.metrics.entry_analysis",
+            "--angles",
+            str(angles_path),
+            "--boundaries",
+            str(boundaries_path),
+            "--output",
+            str(entry_analysis_path),
+        ]
+        if keypoints_path.exists():
+            entry_command.extend(["--keypoints", str(keypoints_path)])
+        if dynamic_path.exists():
+            entry_command.extend(["--dynamic", str(dynamic_path)])
+        if vel_accel_path.exists():
+            entry_command.extend(["--vel-accel", str(vel_accel_path)])
+        _run_step(step_idx, total_steps, "Analyzing entry mechanics", entry_command, progress_callback=progress_callback)
+
     # Final step: Generate report
     step_idx += 1
     report_command = [
@@ -716,6 +760,8 @@ def run_pipeline(
         "dynamic_json": dynamic_path,
         "symmetry_json": symmetry_path,
         "risk_json": risk_path,
+        "joint_contributions_json": joint_contrib_path,
+        "entry_analysis_json": entry_analysis_path,
         "annotated_video": annotated_path,
         "report_json": report_json_path,
         "report_pdf": report_pdf_path,
