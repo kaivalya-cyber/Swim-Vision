@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+from dataclasses import dataclass
 from typing import Dict, Tuple
 
 
@@ -87,13 +88,58 @@ DEVIATION_THRESHOLDS: Dict[str, float] = {
     "SIGNIFICANT": 20.0,
 }
 
+# Swimmer height-based adjustment factors for optimal ranges
+# Taller swimmers typically have wider optimal ranges for certain angles
+HEIGHT_ADJUSTMENTS: Dict[str, Dict[str, Tuple[float, float]]] = {
+    # Per-cm adjustment: (min_adjustment, max_adjustment) added to range
+    "torso_lean": {"min_per_cm": 0.0, "max_per_cm": 0.05},
+    "hip_angle": {"min_per_cm": -0.05, "max_per_cm": 0.05},
+    "front_knee_angle": {"min_per_cm": -0.1, "max_per_cm": 0.1},
+    "rear_knee_angle": {"min_per_cm": -0.1, "max_per_cm": 0.1},
+    "body_linearity": {"min_per_cm": 0.0, "max_per_cm": 0.02},
+}
 
-def get_range(phase: str, metric: str) -> Tuple[float, float]:
-    """Return the optimal range tuple for a phase metric.
+# Experience level adjustment factors
+EXPERIENCE_ADJUSTMENTS: Dict[str, Dict[str, Dict[str, float]]] = {
+    # beginner: wider ranges (more forgiving), elite: tighter ranges
+    "beginner": {"tolerance_multiplier": 1.5},
+    "intermediate": {"tolerance_multiplier": 1.2},
+    "advanced": {"tolerance_multiplier": 1.0},
+    "elite": {"tolerance_multiplier": 0.85},
+}
+
+
+@dataclass
+class SwimmerProfile:
+    """Swimmer profile for personalized optimal ranges.
+
+    Attributes:
+        height_cm: Swimmer height in centimeters.
+        experience: Experience level (beginner, intermediate, advanced, elite).
+        gender: Optional gender for gender-specific ranges.
+        age: Optional age in years.
+    """
+
+    height_cm: float | None = None
+    experience: str = "intermediate"
+    gender: str | None = None
+    age: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.experience not in EXPERIENCE_ADJUSTMENTS:
+            raise ValueError(
+                f"Invalid experience level '{self.experience}'. "
+                f"Choose from: {sorted(EXPERIENCE_ADJUSTMENTS)}"
+            )
+
+
+def get_range(phase: str, metric: str, profile: SwimmerProfile | None = None) -> Tuple[float, float]:
+    """Return the optimal range tuple for a phase metric, optionally personalized.
 
     Args:
         phase: Phase identifier such as ``block_phase``.
         metric: Metric name within the phase.
+        profile: Optional swimmer profile for personalized range adjustment.
 
     Returns:
         The inclusive ``(min_angle, max_angle)`` range in degrees.
@@ -110,7 +156,29 @@ def get_range(phase: str, metric: str) -> Tuple[float, float]:
             f"Unknown metric '{metric}' for phase '{phase}'. "
             f"Available metrics: {available_metrics}."
         )
-    return OPTIMAL_RANGES[phase][metric]
+
+    base_min, base_max = OPTIMAL_RANGES[phase][metric]
+
+    if profile is None:
+        return base_min, base_max
+
+    # Apply experience-level tolerance multiplier
+    exp_adj = EXPERIENCE_ADJUSTMENTS.get(profile.experience, EXPERIENCE_ADJUSTMENTS["intermediate"])
+    multiplier = float(exp_adj["tolerance_multiplier"])
+    range_span = base_max - base_min
+    expansion = range_span * (multiplier - 1.0) / 2.0
+    adjusted_min = base_min - expansion
+    adjusted_max = base_max + expansion
+
+    # Apply height-based adjustments if profile has height and metric supports it
+    if profile.height_cm is not None and metric in HEIGHT_ADJUSTMENTS:
+        h_adj = HEIGHT_ADJUSTMENTS[metric]
+        reference_height = 175.0
+        height_delta = profile.height_cm - reference_height
+        adjusted_min += height_delta * float(h_adj["min_per_cm"])
+        adjusted_max += height_delta * float(h_adj["max_per_cm"])
+
+    return adjusted_min, adjusted_max
 
 
 def build_arg_parser() -> argparse.ArgumentParser:

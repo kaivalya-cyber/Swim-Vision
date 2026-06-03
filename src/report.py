@@ -378,6 +378,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", required=True, help="Directory for report artifacts.")
     parser.add_argument("--deviations", help="Optional aggregate deviation JSON path.")
     parser.add_argument("--reaction_time", type=float, help="Optional reaction time in milliseconds.")
+    parser.add_argument("--vel_accel", help="Optional velocity/acceleration profile JSON.")
+    parser.add_argument("--symmetry", help="Optional symmetry analysis JSON.")
     parser.add_argument(
         "--analysis_mode",
         choices=["dive", "stroke"],
@@ -457,6 +459,20 @@ def main() -> int:
     if args.keypoints:
         try:
             deviations["keypoints_path"] = str(Path(args.keypoints))
+        except Exception:
+            pass
+
+    # Load optional enhanced analysis results
+    if args.vel_accel:
+        try:
+            with open(args.vel_accel, "r", encoding="utf-8") as f:
+                deviations["velocity_acceleration"] = json.load(f)
+        except Exception:
+            pass
+    if args.symmetry:
+        try:
+            with open(args.symmetry, "r", encoding="utf-8") as f:
+                deviations["symmetry_analysis"] = json.load(f)
         except Exception:
             pass
 

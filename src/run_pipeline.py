@@ -409,7 +409,7 @@ def run_pipeline(
     report_pdf_path = RESULTS_DIR / f"{clip_id}_report.pdf"
 
     width, height = _resolve_dimensions(resolved_input, crop)
-    total_steps = 7 if analysis_mode == "stroke" else 6
+    total_steps = 7 if analysis_mode == "stroke" else 8
 
     _emit_progress(
         progress_callback,
@@ -490,6 +490,21 @@ def run_pipeline(
     ]
     _run_step(3, total_steps, "Computing joint angles", joint_command, progress_callback=progress_callback)
 
+    # Step 3b: Compute velocity & acceleration profiles
+    vel_accel_path = RESULTS_DIR / f"{clip_id}_vel_accel.json"
+    vel_accel_command = [
+        sys.executable,
+        "-m",
+        "src.metrics.velocity_acceleration",
+        "--angles",
+        str(angles_path),
+        "--boundaries",
+        str(boundaries_path),
+        "--output",
+        str(vel_accel_path),
+    ]
+    _run_step(4, total_steps, "Computing velocity & acceleration", vel_accel_command, progress_callback=progress_callback)
+
     deviation_command = [
         sys.executable,
         "-m",
@@ -502,7 +517,24 @@ def run_pipeline(
         str(deviations_path),
         "--all-phases",
     ]
-    _run_step(4, total_steps, "Computing deviations", deviation_command, progress_callback=progress_callback)
+    _run_step(5, total_steps, "Computing deviations", deviation_command, progress_callback=progress_callback)
+
+    # Step 5b: Symmetry analysis
+    symmetry_path = RESULTS_DIR / f"{clip_id}_symmetry.json"
+    symmetry_command = [
+        sys.executable,
+        "-m",
+        "src.metrics.symmetry_analysis",
+        "--angles",
+        str(angles_path),
+        "--boundaries",
+        str(boundaries_path),
+        "--mode",
+        "dive",
+        "--output",
+        str(symmetry_path),
+    ]
+    _run_step(6, total_steps, "Analyzing bilateral symmetry", symmetry_command, progress_callback=progress_callback)
 
     overlay_command = [
         sys.executable,
@@ -518,7 +550,7 @@ def run_pipeline(
     ]
     if crop_values:
         overlay_command.extend(["--crop", *crop_values])
-    _run_step(5, total_steps, "Rendering annotated overlay", overlay_command, progress_callback=progress_callback)
+    _run_step(7, total_steps, "Rendering annotated overlay", overlay_command, progress_callback=progress_callback)
 
     report_command = [
         sys.executable,
@@ -533,8 +565,12 @@ def run_pipeline(
         str(annotated_path),
         "--output",
         str(RESULTS_DIR),
+        "--vel_accel",
+        str(vel_accel_path),
+        "--symmetry",
+        str(symmetry_path),
     ]
-    _run_step(6, total_steps, "Generating report", report_command, progress_callback=progress_callback)
+    _run_step(8, total_steps, "Generating report", report_command, progress_callback=progress_callback)
 
     outputs = {
         "keypoints": keypoints_path,
@@ -542,6 +578,8 @@ def run_pipeline(
         "angles_csv": angles_path,
         "boundaries_json": boundaries_path,
         "deviations_json": deviations_path,
+        "vel_accel_json": vel_accel_path,
+        "symmetry_json": symmetry_path,
         "annotated_video": annotated_path,
         "report_json": report_json_path,
         "report_pdf": report_pdf_path,
