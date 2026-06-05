@@ -85,11 +85,8 @@ def _run_step(
     )
 
 
-def _resolve_dimensions(input_path: Path, crop: list[int] | None) -> tuple[int, int]:
-    """Resolve the frame dimensions for angle computation."""
-
-    if crop is not None:
-        return int(crop[2]), int(crop[3])
+def _resolve_video_metadata(input_path: Path, crop: list[int] | None) -> tuple[int, int, float]:
+    """Resolve frame dimensions and FPS for computation."""
 
     probe_command = [
         sys.executable,
@@ -100,8 +97,9 @@ def _resolve_dimensions(input_path: Path, crop: list[int] | None) -> tuple[int, 
             "ok = cap.isOpened(); "
             "width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)); "
             "height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)); "
+            "fps = float(cap.get(cv2.CAP_PROP_FPS)); "
             "cap.release(); "
-            "print(f'{width} {height}' if ok else '0 0')"
+            "print(f'{width} {height} {fps}' if ok else '0 0 0.0')"
         ),
         str(input_path),
     ]
@@ -114,13 +112,23 @@ def _resolve_dimensions(input_path: Path, crop: list[int] | None) -> tuple[int, 
     if result.returncode != 0:
         raise RuntimeError(f"Failed to inspect video dimensions for '{input_path}'.")
     parts = result.stdout.strip().split()
-    if len(parts) != 2:
-        raise RuntimeError(f"Unexpected video-dimension probe output: {result.stdout!r}")
+    if len(parts) != 3:
+        raise RuntimeError(f"Unexpected video-metadata probe output: {result.stdout!r}")
+
     width = int(parts[0])
     height = int(parts[1])
+    fps = float(parts[2])
+
+    if fps <= 0:
+        fps = 30.0
+
+    if crop is not None:
+        width = int(crop[2])
+        height = int(crop[3])
+
     if width <= 0 or height <= 0:
         raise RuntimeError(f"Invalid video dimensions detected for '{input_path}': {width}x{height}")
-    return width, height
+    return width, height, fps
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -172,7 +180,7 @@ def run_pipeline(
     report_json_path = RESULTS_DIR / f"{clip_id}_report.json"
     report_pdf_path = RESULTS_DIR / f"{clip_id}_report.pdf"
 
-    width, height = _resolve_dimensions(resolved_input, crop)
+    width, height, fps = _resolve_video_metadata(resolved_input, crop)
 
     # Pre-calculate automation metrics needed for deviations
     reaction_time = None
@@ -241,7 +249,7 @@ def run_pipeline(
         "--height",
         str(height),
         "--fps",
-        "30.0", # This should ideally be probed from the video
+        str(fps),
     ]
     _run_step(3, total_steps, "Computing joint angles", joint_command, progress_callback=progress_callback)
 
@@ -268,12 +276,12 @@ def run_pipeline(
         from src.metrics.reaction_time import detect_beep_frame, detect_reaction_time, detect_first_stroke_time, estimate_breakout_distance
         import numpy as np
         kp = np.load(keypoints_path)
-        beep = detect_beep_frame(str(resolved_input), 30.0)
+        beep = detect_beep_frame(str(resolved_input), fps)
         if beep is not None:
-            reaction_time = detect_reaction_time(kp, beep, 30.0)
+            reaction_time = detect_reaction_time(kp, beep, fps)
 
         boundaries = json.load(open(boundaries_path, "r"))
-        stroke_data = detect_first_stroke_time(kp, boundaries["entry_start"], 30.0)
+        stroke_data = detect_first_stroke_time(kp, boundaries["entry_start"], fps)
         if stroke_data["first_stroke_frame"]:
             breakout_dist = estimate_breakout_distance(kp, boundaries["entry_start"], stroke_data["first_stroke_frame"])
     except Exception as exc:
@@ -288,7 +296,7 @@ def run_pipeline(
             "from src.ingest import analyze_entry_splash; "
             "angles = pd.read_csv(sys.argv[1], index_col=0); "
             "boundaries = json.load(open(sys.argv[2], 'r', encoding='utf-8')); "
-            "splash = analyze_entry_splash(sys.argv[4], boundaries['entry_start'], boundaries['entry_end'], sys.argv[5].split() if sys.argv[5] else None); "
+            "splash = analyze_entry_splash(sys.argv[4], boundaries['entry_start'], boundaries['entry_end'], [int(v) for v in sys.argv[5].split()] if sys.argv[5] else None); "
             "angles['splash_score'] = splash; "
             "block = compute_deviations(angles, 'block_phase', boundaries); "
             "flight = compute_deviations(angles, 'flight_phase', boundaries); "

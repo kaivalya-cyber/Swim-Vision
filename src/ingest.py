@@ -51,19 +51,16 @@ def analyze_entry_splash(video_path: str, entry_start: int, entry_end: int, crop
     if not capture.isOpened():
         return 0.0
 
+    # Seek to entry start for efficiency
+    capture.set(cv2.CAP_PROP_POS_FRAMES, entry_start)
+
     splash_scores = []
     prev_frame = None
 
-    # We focus on the water surface area
-    # If we don't have water surface detection here, we estimate it
-    # from the lower part of the frame.
-
-    for idx in range(entry_end + 1):
+    for idx in range(entry_start, entry_end + 1):
         success, frame = capture.read()
         if not success:
             break
-        if idx < entry_start:
-            continue
 
         if crop:
             frame = frame[crop[1]:crop[1]+crop[3], crop[0]:crop[0]+crop[2]]

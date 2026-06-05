@@ -166,13 +166,6 @@ def generate_report(
         else:
             current_video_y = 635
 
-        # Calculate mean confidence for the report
-        total_conf = []
-        for p in ["block_phase", "flight_phase", "entry_phase"]:
-            for r in deviations.get(p, []):
-                # This is a bit of a hack since deviations doesn't store confidence directly,
-                # but we can pass it in if we update the pipeline.
-                pass
 
         pdf.drawString(72, current_video_y, f"Annotated Video: {annotated_video_path}")
         pdf.showPage()

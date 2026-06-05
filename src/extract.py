@@ -46,7 +46,6 @@ if LEGACY_PYTHON.exists() and Path(sys.executable).resolve() != LEGACY_PYTHON.re
 import cv2
 import mediapipe.python.solutions.pose as mp_pose
 import numpy as np
-from mediapipe.framework.formats import landmark_pb2
 
 
 logging.basicConfig(
